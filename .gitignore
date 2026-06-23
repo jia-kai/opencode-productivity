@@ -1,0 +1,10 @@
+dist/
+node_modules/
+
+.opencode/productivity-state.json
+.opencode/productivity-reset.json
+.opencode/productivity-action.json
+.opencode/productivity-action-response.json
+
+*.log
+.DS_Store

@@ -1,0 +1,46 @@
+{
+  "name": "opencode-productivity-plugin",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Local OpenCode plugin with prompt history search, scheduled wakeups, and background shell commands.",
+  "main": "./dist/src/server.js",
+  "exports": {
+    "./server": {
+      "import": "./dist/src/server.js",
+      "types": "./dist/src/server.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/src/tui.js",
+      "types": "./dist/src/tui.d.ts"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "package.json"
+  ],
+  "workspaces": [
+    ".opencode"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/tests/*.test.js",
+    "install:tui": "npm install --workspace @local/opencode-productivity-runtime",
+    "link:global": "npm run build && opencode plugin -g \"$PWD\" --force",
+    "pack:dry": "npm pack --dry-run",
+    "test:opencode": "npm run build && OPENCODE_REAL_MODEL_TESTS=1 node --test dist/tests/opencode-tools.integration.test.js",
+    "check": "npm run build && npm test"
+  },
+  "engines": {
+    "opencode": "^1.0.0",
+    "node": ">=26"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.17.9",
+    "@opentui/core": "0.3.4",
+    "@opentui/solid": "0.3.4",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {}
+}
