@@ -1,8 +1,8 @@
 import { BackgroundManager, type BackgroundCommandRecord } from "./background.js"
 import { WakeupScheduler } from "./scheduler.js"
 import { startProductivityIpcServer, type ProductivityActionRequest, type ProductivityActionResponse } from "./ipc.js"
-import { createProductivityRegistry } from "./registry.js"
-import { writeStatusSnapshot } from "./status.js"
+import { createProductivityRegistry, cleanupStaleProductivityRuntimeFiles, deleteLegacyProductivityRegistry } from "./registry.js"
+import { deleteLegacyStatusSnapshot, deleteStatusSnapshot, writeStatusSnapshot } from "./status.js"
 import { handleTuiCommand } from "./tui-command.js"
 import { localTimeContext } from "./time.js"
 import type { PluginContext, ToolContext } from "./types.js"
@@ -24,6 +24,9 @@ export function createProductivityPlugin(tool: ToolFactory) {
   if (!schema) throw new Error("@opencode-ai/plugin tool.schema is required")
 
   return async function ProductivityPlugin(ctx: PluginContext) {
+    cleanupStaleProductivityRuntimeFiles()
+    deleteLegacyStatusSnapshot(ctx.directory)
+    deleteLegacyProductivityRegistry(ctx.directory)
     const scheduler = new WakeupScheduler(ctx.client)
     const background = new BackgroundManager(ctx.client, ctx.directory)
     const registry = createProductivityRegistry(ctx.directory)
@@ -167,7 +170,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
         scheduler.dispose()
         background.dispose()
         registry.remove(instanceID)
-        publish()
+        deleteStatusSnapshot(ctx.directory)
       },
     }
   }

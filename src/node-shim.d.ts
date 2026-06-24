@@ -24,10 +24,17 @@ declare module "node:fs" {
     mtimeMs: number
     isSocket(): boolean
   }
+  export interface Dirent {
+    name: string
+    isDirectory(): boolean
+    isFile(): boolean
+    isSocket(): boolean
+  }
   export function existsSync(path: string): boolean
   export function chmodSync(path: string, mode: number): void
   export function lstatSync(path: string): Stats
   export function statSync(path: string): Stats
+  export function readdirSync(path: string, options: { withFileTypes: true }): Dirent[]
   export function mkdirSync(path: string, options?: { recursive?: boolean }): void
   export function mkdtempSync(prefix: string): string
   export function readFileSync(path: string, encoding: "utf8"): string

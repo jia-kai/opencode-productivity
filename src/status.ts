@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import type { BackgroundCommandRecord } from "./background.js"
 import type { WakeupRecord } from "./scheduler.js"
+import { productivityRuntimeDirectory } from "./runtime-paths.js"
 
 export type BackgroundStatusSnapshot = Omit<BackgroundCommandRecord, "stdout" | "stderr">
 
@@ -37,6 +38,11 @@ export function writeStatusSnapshot(directory: string, wakeups: WakeupRecord[], 
   writeFileSync(file, JSON.stringify({ updatedAt: new Date().toISOString(), ipc, wakeups, commands: commands.map(stripOutput) }, null, 2))
 }
 
+export function deleteStatusSnapshot(directory: string): void {
+  rmSync(statusSnapshotPath(directory), { force: true })
+  removeEmptyRuntimeDirectory(directory)
+}
+
 export function readStatusSnapshot(directory: string): ProductivityStatusSnapshot {
   try {
     const parsed = JSON.parse(readFileSync(statusSnapshotPath(directory), "utf8")) as Partial<ProductivityStatusSnapshot>
@@ -61,5 +67,21 @@ function stripOutput(command: BackgroundCommandRecord): BackgroundStatusSnapshot
 }
 
 export function statusSnapshotPath(directory: string): string {
+  return path.join(productivityRuntimeDirectory(directory), "productivity-state.json")
+}
+
+export function legacyStatusSnapshotPath(directory: string): string {
   return path.join(directory, ".opencode", "productivity-state.json")
+}
+
+export function deleteLegacyStatusSnapshot(directory: string): void {
+  rmSync(legacyStatusSnapshotPath(directory), { force: true })
+}
+
+function removeEmptyRuntimeDirectory(directory: string): void {
+  try {
+    rmSync(productivityRuntimeDirectory(directory), { recursive: false })
+  } catch {
+    // The directory may still contain the registry or another live file.
+  }
 }

@@ -1,7 +1,7 @@
-import { lstatSync, mkdirSync, unlinkSync } from "node:fs"
+import { lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs"
 import net, { type Socket } from "node:net"
-import { tmpdir } from "node:os"
 import path from "node:path"
+import { hashProjectPath, productivityRuntimeRoot } from "./runtime-paths.js"
 
 export type ProductivityActionType = "cancel-wakeup" | "cancel-background" | "pull-background-output" | "reset"
 
@@ -36,6 +36,7 @@ const IDLE_SOCKET_TIMEOUT_MS = 5_000
 
 export async function startProductivityIpcServer(directory: string, handler: ProductivityActionHandler): Promise<ProductivityIpcServer> {
   assertUnixSocketSupport()
+  cleanupStaleProductivitySockets()
   const socketPath = productivitySocketPath(directory, process.pid)
   mkdirSync(path.dirname(socketPath), { recursive: true })
   unlinkStaleSocket(socketPath)
@@ -129,7 +130,22 @@ export async function sendProductivityAction(
 }
 
 export function productivitySocketPath(directory: string, pid = process.pid): string {
-  return path.join(tmpdir(), "opencode-productivity", `${hashPath(directory)}-${pid}.sock`)
+  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-${pid}.sock`)
+}
+
+export function cleanupStaleProductivitySockets(): void {
+  try {
+    for (const entry of readdirSync(productivityRuntimeRoot(), { withFileTypes: true })) {
+      if (!entry.isSocket() && !entry.isFile()) continue
+      const match = /^.+-(\d+)\.sock$/.exec(entry.name)
+      if (!match) continue
+      const pid = Number(match[1])
+      const socketPath = path.join(productivityRuntimeRoot(), entry.name)
+      if (!Number.isSafeInteger(pid) || !processExists(pid)) unlinkStaleSocket(socketPath)
+    }
+  } catch {
+    // Missing or unreadable runtime directories are harmless.
+  }
 }
 
 function assertUnixSocketSupport(): void {
@@ -207,19 +223,19 @@ function unlinkStaleSocket(socketPath: string): void {
   }
 }
 
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error instanceof Error && "code" in error && (error as { code?: unknown }).code === "EPERM"
+  }
+}
+
 function isAction(value: unknown): value is ProductivityActionType {
   return value === "cancel-wakeup" || value === "cancel-background" || value === "pull-background-output" || value === "reset"
 }
 
 function isStream(value: unknown): value is "stdout" | "stderr" | "both" {
   return value === "stdout" || value === "stderr" || value === "both"
-}
-
-function hashPath(value: string): string {
-  let hash = 2166136261
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
 }

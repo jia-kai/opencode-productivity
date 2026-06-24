@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import type { BackgroundCommandRecord } from "./background.js"
 import type { BackgroundStatusSnapshot, ProductivityStatusSnapshot } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
+import { productivityRuntimeDirectory, productivityRuntimeStateRoot } from "./runtime-paths.js"
 
 export interface ProductivityInstanceSnapshot extends ProductivityStatusSnapshot {
   instanceID: string
@@ -53,7 +54,8 @@ export function createProductivityRegistry(directory: string): ProductivityRegis
       withRegistryLock(directory, () => {
         const registry = readProductivityRegistryUnlocked(directory)
         const instances = pruneInstances(registry.instances, instanceID)
-        writeRegistryUnlocked(directory, { updatedAt: new Date().toISOString(), instances })
+        if (instances.length) writeRegistryUnlocked(directory, { updatedAt: new Date().toISOString(), instances })
+        else deleteRegistryUnlocked(directory)
       })
     },
     read() {
@@ -69,6 +71,17 @@ export function readProductivityRegistry(directory: string): ProductivityRegistr
   return readProductivityRegistryUnlocked(directory)
 }
 
+export function cleanupStaleProductivityRuntimeFiles(): void {
+  try {
+    for (const entry of readdirSync(productivityRuntimeStateRoot(), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      cleanupRuntimeStateDirectory(path.join(productivityRuntimeStateRoot(), entry.name))
+    }
+  } catch {
+    // Missing or unreadable runtime directories are harmless.
+  }
+}
+
 export function selectProductivityInstance(registry: ProductivityRegistry, sessionID?: string): ProductivityInstanceSnapshot | undefined {
   return selectFromInstances(registry.instances.filter(isFreshInstance).filter((instance) => processExists(instance.serverPid)), sessionID)
 }
@@ -79,7 +92,8 @@ export function selectAndConnectProductivityInstance(directory: string, sessionI
     const instances = pruneInstances(registry.instances)
     const selected = selectFromInstances(instances, sessionID)
     if (!selected) {
-      writeRegistryUnlocked(directory, { updatedAt: new Date().toISOString(), instances })
+      if (instances.length) writeRegistryUnlocked(directory, { updatedAt: new Date().toISOString(), instances })
+      else deleteRegistryUnlocked(directory)
       return undefined
     }
     const now = new Date().toISOString()
@@ -92,7 +106,16 @@ export function selectAndConnectProductivityInstance(directory: string, sessionI
 }
 
 export function productivityRegistryPath(directory: string): string {
+  return path.join(productivityRuntimeDirectory(directory), "productivity-registry.json")
+}
+
+export function legacyProductivityRegistryPath(directory: string): string {
   return path.join(directory, ".opencode", "productivity-registry.json")
+}
+
+export function deleteLegacyProductivityRegistry(directory: string): void {
+  rmSync(legacyProductivityRegistryPath(directory), { force: true })
+  rmSync(`${legacyProductivityRegistryPath(directory)}.lock`, { recursive: true, force: true })
 }
 
 function selectFromInstances(instances: ProductivityInstanceSnapshot[], sessionID?: string): ProductivityInstanceSnapshot | undefined {
@@ -126,6 +149,11 @@ function writeRegistryUnlocked(directory: string, registry: ProductivityRegistry
   const file = productivityRegistryPath(directory)
   mkdirSync(path.dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(registry, null, 2))
+}
+
+function deleteRegistryUnlocked(directory: string): void {
+  rmSync(productivityRegistryPath(directory), { force: true })
+  removeEmptyRuntimeDirectory(directory)
 }
 
 function withRegistryLock<Value>(directory: string, fn: () => Value): Value | undefined {
@@ -174,6 +202,54 @@ function isStaleLock(lock: string): boolean {
     return Date.now() - statSync(lock).mtimeMs > LOCK_TTL_MS
   } catch {
     return false
+  }
+}
+
+function removeEmptyRuntimeDirectory(directory: string): void {
+  try {
+    rmSync(productivityRuntimeDirectory(directory), { recursive: false })
+  } catch {
+    // The directory may still contain the status snapshot or another live file.
+  }
+}
+
+function cleanupRuntimeStateDirectory(directory: string): void {
+  const registryPath = path.join(directory, "productivity-registry.json")
+  const statusPath = path.join(directory, "productivity-state.json")
+  const lockPath = `${registryPath}.lock`
+  try {
+    if (isStaleLock(lockPath)) rmSync(lockPath, { recursive: true, force: true })
+    const registry = readRegistryFile(registryPath)
+    if (registry) {
+      const instances = pruneInstances(registry.instances)
+      if (instances.length) writeFileSync(registryPath, JSON.stringify({ updatedAt: new Date().toISOString(), instances }, null, 2))
+      else rmSync(registryPath, { force: true })
+    }
+    const status = readStatusFile(statusPath)
+    if (status && (!status.ipc?.serverPid || !processExists(status.ipc.serverPid))) rmSync(statusPath, { force: true })
+    rmSync(directory, { recursive: false })
+  } catch {
+    // Keep live or concurrently updated runtime directories.
+  }
+}
+
+function readRegistryFile(file: string): ProductivityRegistry | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<ProductivityRegistry>
+    return {
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+      instances: Array.isArray(parsed.instances) ? parsed.instances.filter(isInstanceSnapshot) : [],
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function readStatusFile(file: string): Partial<ProductivityStatusSnapshot> | undefined {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as Partial<ProductivityStatusSnapshot>
+  } catch {
+    return undefined
   }
 }
 

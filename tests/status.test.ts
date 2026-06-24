@@ -9,13 +9,16 @@ import { productivitySocketPath, sendProductivityAction, startProductivityIpcSer
 import { handleActionRequest } from "../src/plugin.js"
 import {
   createProductivityRegistry,
+  productivityRegistryPath,
   readProductivityRegistry,
   selectProductivityInstance,
 } from "../src/registry.js"
 import { WakeupScheduler } from "../src/scheduler.js"
 import {
+  deleteStatusSnapshot,
   detailedStatus,
   readStatusSnapshot,
+  statusSnapshotPath,
   writeStatusSnapshot,
 } from "../src/status.js"
 
@@ -282,6 +285,56 @@ test("status snapshot advertises IPC socket path without output captures", () =>
     const snapshot = readStatusSnapshot(dir)
     assert.equal(snapshot.ipc?.socketPath, "/tmp/opencode-productivity/test.sock")
     assert.deepEqual(snapshot.commands, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status and registry files are kept outside the project .opencode directory", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
+  try {
+    writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
+    createProductivityRegistry(dir).write({
+      instanceID: "instance-runtime-path",
+      serverPid: process.pid,
+      socketPath: "/tmp/opencode-productivity/runtime.sock",
+      ipc: { instanceID: "instance-runtime-path", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/runtime.sock" },
+      sessions: [],
+      wakeups: [],
+      commands: [],
+    })
+
+    assert.equal(existsSync(path.join(dir, ".opencode")), false)
+    assert.equal(statusSnapshotPath(dir).startsWith(path.join(tmpdir(), "opencode-productivity", "state")), true)
+    assert.equal(productivityRegistryPath(dir).startsWith(path.join(tmpdir(), "opencode-productivity", "state")), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status and registry cleanup removes empty temp runtime files", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
+  const registry = createProductivityRegistry(dir)
+  try {
+    writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
+    registry.write({
+      instanceID: "instance-cleanup",
+      serverPid: process.pid,
+      socketPath: "/tmp/opencode-productivity/cleanup.sock",
+      ipc: { instanceID: "instance-cleanup", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/cleanup.sock" },
+      sessions: [],
+      wakeups: [],
+      commands: [],
+    })
+
+    assert.equal(existsSync(statusSnapshotPath(dir)), true)
+    assert.equal(existsSync(productivityRegistryPath(dir)), true)
+
+    registry.remove("instance-cleanup")
+    deleteStatusSnapshot(dir)
+
+    assert.equal(existsSync(statusSnapshotPath(dir)), false)
+    assert.equal(existsSync(productivityRegistryPath(dir)), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
