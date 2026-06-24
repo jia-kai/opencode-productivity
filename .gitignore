@@ -1,5 +1,6 @@
 dist/
 node_modules/
+.global-opencode-productivity-plugin/
 
 .opencode/productivity-state.json
 .opencode/productivity-registry.json

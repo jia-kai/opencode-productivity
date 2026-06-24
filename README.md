@@ -41,7 +41,7 @@ Those wrappers point at the compiled package files under `dist/`, so run `npm ru
 
 ### Editable global development
 
-For a global OpenCode install that stays linked to this working tree, register this package directory by absolute path:
+For a global OpenCode install that stays linked to this working tree, register the generated dev-link package by absolute path:
 
 ```sh
 npm run link:global
@@ -51,10 +51,13 @@ That script runs:
 
 ```sh
 npm run build
-opencode plugin -g "$PWD" --force
+npm run prepare:global-link
+opencode plugin -g "$PWD/.global-opencode-productivity-plugin" --force
 ```
 
-After code changes, run `npm run build` and restart OpenCode. The global OpenCode config still points at this checkout, like `pip install -e`.
+The generated `.global-opencode-productivity-plugin/` directory contains only tiny package entrypoints that import this checkout's compiled `dist/` files by absolute file URL. It intentionally excludes the repo-local `.opencode/` development config, so global editable installs do not copy this repo's `.opencode` wrappers into other projects.
+
+After code changes, run `npm run build` and restart OpenCode. The global OpenCode config still points at this checkout's compiled files, like `pip install -e`.
 
 If you install globally, also disable OpenCode's default session rename shortcut in your global TUI config if you want `ctrl+r` to belong only to prompt history:
 
@@ -66,7 +69,7 @@ If you install globally, also disable OpenCode's default session rename shortcut
 }
 ```
 
-To remove it, delete this checkout path from your global OpenCode plugin config.
+To remove it, delete the `.global-opencode-productivity-plugin` path from your global OpenCode plugin config.
 
 ### Packaged global install
 

@@ -27,7 +27,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --test dist/tests/*.test.js",
     "install:tui": "npm install --workspace @local/opencode-productivity-runtime",
-    "link:global": "npm run build && opencode plugin -g \"$PWD\" --force",
+    "prepare:global-link": "node scripts/prepare-global-link.mjs",
+    "link:global": "npm run build && npm run prepare:global-link && opencode plugin -g \"$PWD/.global-opencode-productivity-plugin\" --force",
     "pack:dry": "npm pack --dry-run",
     "test:opencode": "npm run build && OPENCODE_REAL_MODEL_TESTS=1 node --test dist/tests/opencode-tools.integration.test.js",
     "check": "npm run build && npm test"

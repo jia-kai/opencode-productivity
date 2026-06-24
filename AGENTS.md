@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a TypeScript OpenCode productivity plugin. Core source lives in `src/`: server plugin entrypoints are in `server.ts` and `plugin.ts`, scheduling/background logic is split into modules such as `scheduler.ts`, `background.ts`, `delivery.ts`, and TUI code lives in `tui.tsx` plus `tui-command.ts`. Tests are in `tests/` and compile into `dist/tests/`. Project-local OpenCode wrappers and TUI config live under `.opencode/`; they point at compiled files in `dist/`, so rebuild after source edits.
+This repository is a TypeScript OpenCode productivity plugin. Core source lives in `src/`: server plugin entrypoints are in `server.ts` and `plugin.ts`, scheduling/background logic is split into modules such as `scheduler.ts`, `background.ts`, `delivery.ts`, and TUI code lives in `tui.tsx` plus `tui-command.ts`. Tests are in `tests/` and compile into `dist/tests/`. Project-local OpenCode wrappers and TUI config live under `.opencode/`; they point at compiled files in `dist/`, so rebuild after source edits. Editable global installs use the generated `.global-opencode-productivity-plugin/` package, which contains only entrypoint wrappers back to this checkout's compiled `dist/` files.
 
 ## Build, Test, and Development Commands
 
@@ -11,7 +11,8 @@ This repository is a TypeScript OpenCode productivity plugin. Core source lives 
 - `npm test`: run compiled tests with Node's built-in test runner (`dist/tests/*.test.js`).
 - `npm run check`: build, then run the deterministic test suite.
 - `npm run test:opencode`: build and run the real OpenCode/model integration test with `OPENCODE_REAL_MODEL_TESTS=1`.
-- `npm run link:global`: build and register this checkout as a global editable OpenCode plugin.
+- `npm run prepare:global-link`: generate `.global-opencode-productivity-plugin/` wrappers for editable global installs.
+- `npm run link:global`: build, generate the dev-link package, and register it as a global editable OpenCode plugin.
 - `npm run pack:dry`: inspect package contents before publishing or installing an artifact.
 
 ## Coding Style & Naming Conventions
@@ -28,4 +29,4 @@ Current history uses short imperative commit subjects, for example `Add OpenCode
 
 ## Security & Configuration Tips
 
-This project only supports Unix-like systems. TUI-to-server actions use per-process Unix-domain sockets under the system temp directory. Socket paths, `updatedAt`, `connected` state, and known task-origin session IDs are advertised through `.opencode/productivity-registry.json`, guarded by `.opencode/productivity-registry.json.lock`; passive sidebar status also uses `.opencode/productivity-state.json`. Registry selection is conservative for active sessions: it prefers `connectedSessionID`, then task-origin `sessions`, and does not fall back to another instance when a session ID is present but unmatched. `/new` reset is scoped through TUI IPC only; do not reintroduce server-side `session.new` clearing in `tui-command.ts`. Registry writes prune stale entries and entries whose recorded server PID no longer exists. Background command output is retained in memory and tool state is process-scoped. Avoid committing generated `dist/`, local state snapshots/registries, sockets, lock directories, secrets, or machine-specific OpenCode configuration unless the package manifest explicitly requires them.
+This project only supports Unix-like systems. TUI-to-server actions use per-process Unix-domain sockets under the system temp directory. Socket paths, `updatedAt`, `connected` state, and known task-origin session IDs are advertised through `.opencode/productivity-registry.json`, guarded by `.opencode/productivity-registry.json.lock`; passive sidebar status also uses `.opencode/productivity-state.json`. Registry selection is conservative for active sessions: it prefers `connectedSessionID`, then task-origin `sessions`, and does not fall back to another instance when a session ID is present but unmatched. `/new` reset is scoped through TUI IPC only; do not reintroduce server-side `session.new` clearing in `tui-command.ts`. Registry writes prune stale entries and entries whose recorded server PID no longer exists. Background command output is retained in memory and tool state is process-scoped. Avoid committing generated `dist/`, `.global-opencode-productivity-plugin/`, local state snapshots/registries, sockets, lock directories, secrets, or machine-specific OpenCode configuration unless the package manifest explicitly requires them.
