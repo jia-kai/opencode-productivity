@@ -2,9 +2,8 @@ dist/
 node_modules/
 
 .opencode/productivity-state.json
-.opencode/productivity-reset.json
-.opencode/productivity-action.json
-.opencode/productivity-action-response.json
+.opencode/productivity-registry.json
+.opencode/productivity-registry.json.lock/
 
 *.log
 .DS_Store

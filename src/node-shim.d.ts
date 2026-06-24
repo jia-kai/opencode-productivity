@@ -20,11 +20,18 @@ declare module "node:test" {
 }
 
 declare module "node:fs" {
+  export interface Stats {
+    mtimeMs: number
+    isSocket(): boolean
+  }
   export function existsSync(path: string): boolean
   export function chmodSync(path: string, mode: number): void
+  export function lstatSync(path: string): Stats
+  export function statSync(path: string): Stats
   export function mkdirSync(path: string, options?: { recursive?: boolean }): void
   export function mkdtempSync(prefix: string): string
   export function readFileSync(path: string, encoding: "utf8"): string
+  export function rmdirSync(path: string): void
   export function unlinkSync(path: string): void
   export function writeFileSync(path: string, data: string | Uint8Array): void
   export function rmSync(path: string, options?: { force?: boolean; recursive?: boolean }): void
@@ -79,7 +86,33 @@ declare module "node:child_process" {
 declare module "node:events" {
   export class EventEmitter {
     on(event: string, listener: (...args: any[]) => void): this
+    once(event: string, listener: (...args: any[]) => void): this
+    off(event: string, listener: (...args: any[]) => void): this
   }
+}
+
+declare module "node:net" {
+  import type { EventEmitter } from "node:events"
+
+  export interface Socket extends EventEmitter {
+    setEncoding(encoding: string): this
+    setTimeout(timeout: number, callback?: () => void): this
+    write(data: string): boolean
+    end(data?: string): this
+    destroy(): this
+  }
+
+  export interface Server extends EventEmitter {
+    listen(path: string): this
+    close(callback?: () => void): this
+  }
+
+  const net: {
+    createServer(connectionListener?: (socket: Socket) => void): Server
+    createConnection(path: string): Socket
+  }
+  export type { Socket, Server }
+  export default net
 }
 
 declare module "node:sqlite" {
@@ -102,9 +135,10 @@ declare namespace NodeJS {
   interface Process {
     env: ProcessEnv
     platform: string
+    pid: number
     cwd(): string
     getBuiltinModule(id: "node:sqlite"): typeof import("node:sqlite")
-    kill(pid: number, signal?: Signals): boolean
+    kill(pid: number, signal?: Signals | 0): boolean
   }
   interface Timeout {
     unref?(): void

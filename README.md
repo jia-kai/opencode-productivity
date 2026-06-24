@@ -10,6 +10,10 @@ OpenCode plugin that adds:
 
 This is my personal workflow tooling. I take no responsibility for its usability, reliability, or fit for anyone else's setup. Despite the `opencode-` naming, this project is not affiliated with, endorsed by, maintained by, or related to the OpenCode team in any way.
 
+## Platform
+
+This plugin only supports Unix-like systems. It uses Unix process behavior for background command management and a Unix-domain socket for TUI-to-server IPC. Windows is intentionally unsupported.
+
 ## Install
 
 Install local project dependencies:
@@ -167,8 +171,12 @@ Selecting an entry appends it to the current prompt editor without sending a mes
 
 ## TUI status
 
-The server plugin writes a process-local status snapshot to `.opencode/productivity-state.json`. The TUI plugin reads that snapshot and renders:
+The TUI shows productivity state in the right/sidebar panel:
 
-- recent wakeup and background command details in the right/sidebar panel via `sidebar_content`
+- scheduled wakeups
+- recent background commands
+- command status and timing details
 
-The status is best-effort and updates while OpenCode is running. Tool state remains in memory for the active OpenCode process; the snapshot is only for display.
+Use `/oc-wakeups` to view or cancel scheduled wakeups. Use `/oc-background` to view background commands, read retained stdout/stderr tails, or cancel a running command. `/new` clears wakeups, kills running background commands, and clears background history for the plugin instance associated with the current session.
+
+Status is best-effort and updates while OpenCode is running. Tool state remains in memory for the active OpenCode process, and captured stdout/stderr is not written to project files. If no plugin instance is associated with the current session yet, TUI management actions may be unavailable until that session uses one of the wakeup/background tools.

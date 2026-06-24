@@ -12,16 +12,6 @@ export async function handleTuiCommand(input: unknown, state: {
 }): Promise<boolean> {
   const command = extractCommand(input)
   if (!command) return false
-  if (command === "session.new" || command === "new") {
-    const clearedWakeups = state.scheduler.clear()
-    const clearedBackground = state.background.clear()
-    await showToast(
-      state.client,
-      `Cleared ${clearedWakeups} wakeup${clearedWakeups === 1 ? "" : "s"} and ${clearedBackground.cleared} background command${clearedBackground.cleared === 1 ? "" : "s"}${clearedBackground.killed ? `; killed ${clearedBackground.killed} running process${clearedBackground.killed === 1 ? "" : "es"}` : ""}.`,
-      "info",
-    )
-    return true
-  }
   if (command === "oc-history") {
     await openPromptHistory(state.client, extractArguments(input))
     return true

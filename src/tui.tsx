@@ -1,12 +1,10 @@
 import { rankPromptHistory, searchPromptHistory, type PromptHistoryMatch } from "./history.js"
+import { sendProductivityAction, type ProductivityActionResponse } from "./ipc.js"
+import { createProductivityRegistry, type ProductivityInstanceSnapshot } from "./registry.js"
 import {
-  consumeActionResponse,
   detailedStatus,
   readStatusSnapshot,
-  writeActionRequest,
-  writeResetRequest,
   type BackgroundStatusSnapshot,
-  type ProductivityActionResponse,
   type ProductivityStatusSnapshot,
 } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
@@ -46,7 +44,7 @@ export const tui: TuiPlugin = async (api: any) => {
         slashName: "new",
         slashAliases: ["clear"],
         run() {
-          requestProductivityReset(api)
+          void requestProductivityReset(api)
           api.route?.navigate?.("home")
           api.ui?.dialog?.clear?.()
         },
@@ -87,7 +85,7 @@ export const tui: TuiPlugin = async (api: any) => {
 }
 
 function openBackgroundManager(api: any) {
-  const snapshot = readSnapshot(api)
+  const snapshot = readSelectedSnapshot(api)
   if (snapshot.commands.length === 0) {
     showAlert(api, "Background Commands", "No background commands.")
     return
@@ -140,7 +138,7 @@ function openBackgroundActions(api: any, command: BackgroundStatusSnapshot) {
 }
 
 function openWakeupManager(api: any) {
-  const snapshot = readSnapshot(api)
+  const snapshot = readSelectedSnapshot(api)
   const wakeups = snapshot.wakeups.filter((wakeup) => wakeup.status === "scheduled")
   if (wakeups.length === 0) {
     showAlert(api, "Wakeups", "No scheduled wakeups.")
@@ -186,21 +184,10 @@ async function sendAction(
   api: any,
   request: { action: "cancel-wakeup" | "cancel-background" | "pull-background-output"; target: string; stream?: "stdout" | "stderr" | "both"; tail?: number; limit?: number },
 ): Promise<ProductivityActionResponse> {
-  const directory = api.state?.path?.directory ?? "."
+  const socketPath = selectedInstance(api)?.socketPath
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  writeActionRequest(directory, { id, ...request })
-  const response = await waitForActionResponse(directory, id)
-  if (response) return response
-  return { id, respondedAt: "", ok: false, title: "Productivity Action Timed Out", message: "The server plugin did not respond to the TUI request." }
-}
-
-async function waitForActionResponse(directory: string, id: string): Promise<ProductivityActionResponse | undefined> {
-  for (let i = 0; i < 40; i++) {
-    const response = consumeActionResponse(directory, id)
-    if (response) return response
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  return undefined
+  if (!socketPath) return { id, respondedAt: "", ok: false, title: "Productivity Action Unavailable", message: "No productivity plugin instance is available for this session yet." }
+  return await sendProductivityAction(socketPath, { id, ...request })
 }
 
 function showAlert(api: any, title: string, message: string) {
@@ -256,9 +243,9 @@ function HistorySearchDialog(props: {
 }
 
 function registerStatusSlots(api: any): () => void {
-  const [snapshot, setSnapshot] = createSignal(readSnapshot(api))
+  const [snapshot, setSnapshot] = createSignal(readSelectedSnapshot(api))
   const interval = setInterval(() => {
-    setSnapshot(readSnapshot(api))
+    setSnapshot(readSelectedSnapshot(api))
     api.renderer?.requestRender?.()
   }, 1_000)
   ;(interval as { unref?: () => void }).unref?.()
@@ -300,13 +287,40 @@ function readSnapshot(api: any) {
   return readStatusSnapshot(api.state?.path?.directory ?? ".")
 }
 
-function requestProductivityReset(api: any) {
-  try {
-    writeResetRequest(api.state?.path?.directory ?? ".", "session.new")
-  } catch (error) {
+function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
+  const instance = selectedInstance(api)
+  if (instance) {
+    return {
+      updatedAt: instance.updatedAt,
+      ipc: { instanceID: instance.instanceID, serverPid: instance.serverPid, socketPath: instance.socketPath },
+      wakeups: instance.wakeups,
+      commands: instance.commands,
+    }
+  }
+  return readSnapshot(api)
+}
+
+function selectedInstance(api: any): ProductivityInstanceSnapshot | undefined {
+  return createProductivityRegistry(api.state?.path?.directory ?? ".").select(currentSessionID(api))
+}
+
+function currentSessionID(api: any): string | undefined {
+  const route = api.route?.current
+  return route?.name === "session" && typeof route.params?.sessionID === "string" ? route.params.sessionID : undefined
+}
+
+async function requestProductivityReset(api: any) {
+  const socketPath = selectedInstance(api)?.socketPath
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  if (!socketPath) {
+    api.ui?.toast?.({ variant: "error", message: "No productivity plugin instance is available for this session yet." })
+    return
+  }
+  const response = await sendProductivityAction(socketPath, { id, action: "reset", target: "session.new" })
+  if (!response.ok) {
     api.ui?.toast?.({
       variant: "error",
-      message: error instanceof Error ? error.message : "Failed to request productivity state reset",
+      message: response.message || "Failed to request productivity state reset",
     })
   }
 }

@@ -1,6 +1,5 @@
 node_modules
 bun.lock
 productivity-state.json
-productivity-reset.json
-productivity-action.json
-productivity-action-response.json
+productivity-registry.json
+productivity-registry.json.lock

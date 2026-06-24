@@ -1,6 +1,8 @@
 import { BackgroundManager, type BackgroundCommandRecord } from "./background.js"
 import { WakeupScheduler } from "./scheduler.js"
-import { consumeActionRequest, consumeResetRequest, writeActionResponse, writeStatusSnapshot, type ProductivityActionRequest } from "./status.js"
+import { startProductivityIpcServer, type ProductivityActionRequest, type ProductivityActionResponse } from "./ipc.js"
+import { createProductivityRegistry } from "./registry.js"
+import { writeStatusSnapshot } from "./status.js"
 import { handleTuiCommand } from "./tui-command.js"
 import { localTimeContext } from "./time.js"
 import type { PluginContext, ToolContext } from "./types.js"
@@ -24,23 +26,30 @@ export function createProductivityPlugin(tool: ToolFactory) {
   return async function ProductivityPlugin(ctx: PluginContext) {
     const scheduler = new WakeupScheduler(ctx.client)
     const background = new BackgroundManager(ctx.client, ctx.directory)
-    const publish = () => writeStatusSnapshot(ctx.directory, scheduler.list(), background.list())
-    const reset = () => {
-      scheduler.clear()
-      background.clear()
-      publish()
+    const registry = createProductivityRegistry(ctx.directory)
+    const instanceID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    let ipcSocketPath = ""
+    const publish = () => {
+      const wakeups = scheduler.list()
+      const commands = background.list()
+      const ipc = ipcSocketPath ? { instanceID, serverPid: process.pid, socketPath: ipcSocketPath } : undefined
+      writeStatusSnapshot(ctx.directory, wakeups, commands, ipc)
+      if (ipcSocketPath) {
+        registry.write({
+          instanceID,
+          serverPid: process.pid,
+          socketPath: ipcSocketPath,
+          ipc,
+          sessions: knownSessions(wakeups, commands),
+          wakeups,
+          commands,
+        })
+      }
     }
     const publishInterval = setInterval(publish, 1_000)
     publishInterval.unref?.()
-    const resetInterval = setInterval(() => {
-      if (consumeResetRequest(ctx.directory)) reset()
-    }, 500)
-    resetInterval.unref?.()
-    const actionInterval = setInterval(() => {
-      const request = consumeActionRequest(ctx.directory)
-      if (request) void handleActionRequest(request, { scheduler, background, directory: ctx.directory, publish })
-    }, 250)
-    actionInterval.unref?.()
+    const ipc = await startProductivityIpcServer(ctx.directory, (request) => handleActionRequest(request, { scheduler, background, publish }))
+    ipcSocketPath = ipc.socketPath
     publish()
 
     return {
@@ -153,44 +162,48 @@ export function createProductivityPlugin(tool: ToolFactory) {
       },
       dispose: async () => {
         clearInterval(publishInterval)
-        clearInterval(resetInterval)
-        clearInterval(actionInterval)
+        await ipc.close()
+        ipcSocketPath = ""
         scheduler.dispose()
         background.dispose()
+        registry.remove(instanceID)
         publish()
       },
     }
   }
 }
 
+function knownSessions(wakeups: Array<{ sessionID?: string }>, commands: Array<{ sessionID?: string }>): string[] {
+  return [...new Set([...wakeups, ...commands].map((item) => item.sessionID).filter((value): value is string => typeof value === "string" && value.length > 0))]
+}
+
 export async function handleActionRequest(request: ProductivityActionRequest, state: {
   scheduler: WakeupScheduler
   background: BackgroundManager
-  directory: string
   publish: () => void
-}): Promise<void> {
+}): Promise<ProductivityActionResponse> {
   try {
     if (request.action === "cancel-wakeup") {
       const wakeup = await state.scheduler.cancelByUser(request.target)
       state.publish()
-      writeActionResponse(state.directory, {
+      return {
         id: request.id,
+        respondedAt: new Date().toISOString(),
         ok: true,
         title: "Wakeup Cancelled",
         message: `${wakeup.id} / ${wakeup.name} was cancelled.`,
-      })
-      return
+      }
     }
     if (request.action === "cancel-background") {
       const command = state.background.cancelByUser(request.target)
       state.publish()
-      writeActionResponse(state.directory, {
+      return {
         id: request.id,
+        respondedAt: new Date().toISOString(),
         ok: true,
         title: "Background Cancelled",
         message: `${command.id} / ${command.name} was killed by user.`,
-      })
-      return
+      }
     }
     if (request.action === "pull-background-output") {
       const output = state.background.pull({
@@ -199,20 +212,41 @@ export async function handleActionRequest(request: ProductivityActionRequest, st
         tail: request.tail ?? 80,
         limit: request.limit ?? 200,
       })
-      writeActionResponse(state.directory, {
+      return {
         id: request.id,
+        respondedAt: new Date().toISOString(),
         ok: true,
         title: `Output ${output.id} / ${output.name}`,
         message: formatPulledOutput(output),
-      })
+      }
+    }
+    if (request.action === "reset") {
+      state.scheduler.clear()
+      state.background.clear()
+      state.publish()
+      return {
+        id: request.id,
+        respondedAt: new Date().toISOString(),
+        ok: true,
+        title: "Productivity State Reset",
+        message: `Cleared wakeups and background commands for ${request.target || "the current session"}.`,
+      }
+    }
+    return {
+      id: request.id,
+      respondedAt: new Date().toISOString(),
+      ok: false,
+      title: "Productivity Action Failed",
+      message: "Unknown productivity action.",
     }
   } catch (error) {
-    writeActionResponse(state.directory, {
+    return {
       id: request.id,
+      respondedAt: new Date().toISOString(),
       ok: false,
       title: "Productivity Action Failed",
       message: error instanceof Error ? error.message : String(error),
-    })
+    }
   }
 }
 

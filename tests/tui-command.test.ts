@@ -5,7 +5,7 @@ import { WakeupScheduler } from "../src/scheduler.js"
 import { handleTuiCommand } from "../src/tui-command.js"
 import type { OpenCodeClient } from "../src/types.js"
 
-test("session.new TUI command clears wakeups and background history", async () => {
+test("session.new TUI command is ignored by server hook so TUI IPC owns reset scoping", async () => {
   const toasts: Array<{ message: string; variant?: string }> = []
   const client: OpenCodeClient = {
     tui: {
@@ -26,10 +26,10 @@ test("session.new TUI command clears wakeups and background history", async () =
       { client, scheduler, background },
     )
 
-    assert.equal(handled, true)
-    assert.deepEqual(scheduler.list(), [])
-    assert.deepEqual(background.list(), [])
-    assert.match(toasts.at(-1)?.message ?? "", /Cleared 1 wakeup and 1 background command; killed 1 running process/)
+    assert.equal(handled, false)
+    assert.equal(scheduler.list().length, 1)
+    assert.equal(background.list().length, 1)
+    assert.equal(toasts.length, 0)
   } finally {
     scheduler.dispose()
     background.dispose()
