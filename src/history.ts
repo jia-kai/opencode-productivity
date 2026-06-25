@@ -130,13 +130,19 @@ function loadPromptRowsWithBunSqlite(dbPath: string, limit: number): PromptHisto
 }
 
 const candidates = [
-  `select m.id, json_extract(p.data, '$.text') as prompt, m.time_created as createdAt
-    from message m
-    join part p on p.message_id = m.id
-    where json_extract(m.data, '$.role') = 'user'
-      and json_extract(p.data, '$.type') = 'text'
-      and json_extract(p.data, '$.text') is not null
-    order by m.time_created desc
+  `select id, group_concat(text, char(10)) as prompt, createdAt
+    from (
+      select m.id as id, json_extract(p.data, '$.text') as text, m.time_created as createdAt, p.time_created as partCreatedAt
+      from message m
+      join part p on p.message_id = m.id
+      where json_extract(m.data, '$.role') = 'user'
+        and json_extract(p.data, '$.type') = 'text'
+        and json_extract(p.data, '$.text') is not null
+        and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
+      order by m.time_created desc, p.time_created asc
+    )
+    group by id, createdAt
+    order by createdAt desc
     limit ?`,
   `select id, json_extract(prompt, '$.text') as prompt, time_created as createdAt
     from session_input

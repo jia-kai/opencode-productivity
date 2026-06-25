@@ -111,3 +111,82 @@ test("searchPromptHistory reads current OpenCode message/part schema", () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("searchPromptHistory ignores synthetic attachment expansion parts", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-history-"))
+  const dbPath = path.join(dir, "opencode.db")
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec(`
+      create table message (
+        id text primary key,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      create table part (
+        id text primary key,
+        message_id text not null,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+    `)
+    db.prepare("insert into message values (?, ?, ?, ?, ?)").run(
+      "msg-attachment",
+      "ses",
+      20,
+      20,
+      JSON.stringify({ role: "user" }),
+    )
+    db.prepare("insert into part values (?, ?, ?, ?, ?, ?)").run(
+      "part-prompt",
+      "msg-attachment",
+      "ses",
+      21,
+      21,
+      JSON.stringify({ type: "text", text: "Implement @task_plan.md " }),
+    )
+    db.prepare("insert into part values (?, ?, ?, ?, ?, ?)").run(
+      "part-read",
+      "msg-attachment",
+      "ses",
+      22,
+      22,
+      JSON.stringify({ type: "text", synthetic: true, text: "Called the Read tool with task_plan.md" }),
+    )
+    db.prepare("insert into part values (?, ?, ?, ?, ?, ?)").run(
+      "part-file",
+      "msg-attachment",
+      "ses",
+      23,
+      23,
+      JSON.stringify({ type: "text", synthetic: true, text: "<content>\nfile body should not be history prompt\n</content>" }),
+    )
+    db.prepare("insert into part values (?, ?, ?, ?, ?, ?)").run(
+      "part-attachment",
+      "msg-attachment",
+      "ses",
+      24,
+      24,
+      JSON.stringify({
+        type: "file",
+        filename: "task_plan.md",
+        source: { type: "file", path: "task_plan.md", text: { value: "@task_plan.md", start: 10, end: 23 } },
+      }),
+    )
+  } finally {
+    db.close()
+  }
+
+  try {
+    const result = searchPromptHistory("task_plan", { dbPath, limit: 10 })
+    assert.equal(result.length, 1)
+    assert.equal(result[0].id, "msg-attachment")
+    assert.equal(result[0].prompt, "Implement @task_plan.md ")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
