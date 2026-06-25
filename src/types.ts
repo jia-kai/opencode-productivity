@@ -7,6 +7,10 @@ export interface OpenCodeClient {
       path: { id: string }
       body: { noReply?: boolean; parts: Array<{ type: "text"; text: string }> }
     }) => Promise<unknown>
+    promptAsync?: (input: {
+      path: { id: string }
+      body: { noReply?: boolean; parts: Array<{ type: "text"; text: string }> }
+    }) => Promise<unknown>
   }
   tui?: {
     appendPrompt?: (input: { body: { text: string } }) => Promise<unknown>

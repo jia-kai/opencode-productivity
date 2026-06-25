@@ -5,22 +5,32 @@ export interface DeliveryResult {
   error?: string
 }
 
+type SessionPromptInput = {
+  path: { id: string }
+  body: { parts: Array<{ type: "text"; text: string }> }
+}
+
 export async function postSessionNote(
   client: OpenCodeClient | undefined,
   sessionID: string | undefined,
   text: string,
 ): Promise<DeliveryResult> {
-  if (!client?.session?.prompt || !sessionID) {
+  const session = client?.session
+  if ((!session?.promptAsync && !session?.prompt) || !sessionID) {
     return { ok: false, error: "session prompt API or sessionID unavailable" }
   }
   try {
-    await client.session.prompt({
+    const input: SessionPromptInput = {
       path: { id: sessionID },
       body: {
-        noReply: true,
         parts: [{ type: "text", text }],
       },
-    })
+    }
+    if (session.promptAsync) {
+      await session.promptAsync(input)
+    } else {
+      await session.prompt?.(input)
+    }
     return { ok: true }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
