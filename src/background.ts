@@ -275,7 +275,11 @@ export class BackgroundManager {
     if (record.killedByUser) {
       return `Background command ${record.id} / ${record.name} was killed by user: ${record.command}`
     }
-    return `Background command ${record.id} finished with status ${record.status} (exit ${record.exitCode ?? "n/a"}): ${record.command}`
+    const stdout = record.stdoutBuffer.snapshot()
+    const inlineStdout = stdout.totalBytes > 0 && stdout.totalBytes < 32 && !stdout.truncated
+      ? `\nstdout (${stdout.totalBytes} bytes):\n${stdout.text}`
+      : ""
+    return `Background command ${record.id} finished with status ${record.status} (exit ${record.exitCode ?? "n/a"}): ${record.command}${inlineStdout}`
   }
 
   private captureOutput(record: InternalCommand, stream: "stdout" | "stderr", chunk: Buffer | string): void {

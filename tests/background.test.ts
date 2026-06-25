@@ -218,7 +218,7 @@ test("tail reports a message when requested tail lines include omitted output", 
   manager.dispose()
 })
 
-test("completion delivery does not include captured stdout or stderr", async () => {
+test("completion delivery includes only tiny stdout", async () => {
   const prompts: string[] = []
   const manager = new BackgroundManager({
     session: {
@@ -227,16 +227,27 @@ test("completion delivery does not include captured stdout or stderr", async () 
       },
     },
   }, process.cwd())
-  const started = manager.run({
-    name: "delivery-no-output",
-    command: "node -e \"console.log('secret-' + 'output'); console.error('secret-' + 'error')\"",
+
+  const tiny = manager.run({
+    name: "delivery-tiny-output",
+    command: "printf ok; printf 'secret-' >&2; printf error >&2",
   }, "session-1")
-  await waitForStatus(manager, started.id, "exited")
+  await waitForStatus(manager, tiny.id, "exited")
+  await waitForPromptCount(prompts, 1)
 
   assert.equal(prompts.length, 1)
   assert.match(prompts[0], /Background command bg-/)
-  assert.equal(prompts[0].includes("secret-output"), false)
+  assert.match(prompts[0], /stdout \(2 bytes\):\nok/)
   assert.equal(prompts[0].includes("secret-error"), false)
+
+  const long = manager.run({
+    name: "delivery-long-output",
+    command: "node -e \"process.stdout.write('x'.repeat(32))\"",
+  }, "session-1")
+  await waitForStatus(manager, long.id, "exited")
+  await waitForPromptCount(prompts, 2)
+
+  assert.equal(prompts[1].includes("stdout ("), false)
   manager.dispose()
 })
 
@@ -298,4 +309,12 @@ async function waitForStatus(manager: BackgroundManager, id: string, status: str
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   assert.equal(manager.get(id).status, status)
+}
+
+async function waitForPromptCount(prompts: string[], count: number): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (prompts.length >= count) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  assert.equal(prompts.length, count)
 }

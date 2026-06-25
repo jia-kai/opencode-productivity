@@ -58,12 +58,12 @@ export function createProductivityPlugin(tool: ToolFactory) {
     return {
       tool: {
         ScheduleWakeup: tool({
-          description: "Schedule a one-shot or repeated wakeup for the current OpenCode session. Requires a short unique name.",
+          description: "Schedule a one-shot or repeated wakeup for the current OpenCode session. Requires a short unique name, a message, and exactly one of runAt or delaySeconds.",
           args: {
             name: schema.string().describe("Short unique name for this wakeup, 40 characters or fewer"),
             message: schema.string().describe("Message to deliver when the wakeup fires"),
-            runAt: schema.string().optional().describe("ISO datetime for the wakeup"),
-            delaySeconds: schema.number().optional().describe("Delay in seconds from now"),
+            runAt: schema.string().optional().describe("ISO datetime for the wakeup. Mutually exclusive with delaySeconds."),
+            delaySeconds: schema.number().optional().describe("Non-negative delay in seconds from now. Mutually exclusive with runAt."),
             repeatSeconds: schema.number().optional().describe("Optional repeat interval in seconds. Omit or use 0 for one-shot; positive repeat intervals must be at least 60."),
             label: schema.string().optional().describe("Optional short label"),
           },
@@ -74,7 +74,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         ListWakeups: tool({
-          description: "List scheduled, fired, cancelled, and failed wakeups for this OpenCode process.",
+          description: "List scheduled, fired, cancelled, and failed wakeups for this OpenCode process, including current local time for schedule reasoning.",
           args: {},
           async execute() {
             publish()
@@ -82,7 +82,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         CancelWakeup: tool({
-          description: "Cancel a scheduled wakeup by ID or name.",
+          description: "Cancel a wakeup by ID or name. Provide one identifier; name is the short unique name used when scheduling.",
           args: {
             id: schema.string().optional().describe("Wakeup ID"),
             name: schema.string().optional().describe("Wakeup name"),
@@ -94,13 +94,13 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         RunInBackground: tool({
-          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name.",
+          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name and command; stdout/stderr are retained in memory and read with PullBackgroundOutput.",
           args: {
             name: schema.string().describe("Short unique name for this background command, 40 characters or fewer"),
-            command: schema.string().describe("Shell command to run"),
-            cwd: schema.string().optional().describe("Working directory"),
-            timeoutSeconds: schema.number().optional().describe("Optional timeout in seconds"),
-            maxOutputBytes: schema.number().optional().describe("Maximum in-memory stdout/stderr bytes per stream; capped at 1048576 and split between head and tail"),
+            command: schema.string().describe("Non-empty shell command to run"),
+            cwd: schema.string().optional().describe("Working directory; defaults to the current OpenCode project directory"),
+            timeoutSeconds: schema.number().optional().describe("Optional positive timeout in seconds; timed-out commands are terminated"),
+            maxOutputBytes: schema.number().optional().describe("Maximum in-memory stdout/stderr bytes per stream; defaults to and is capped at 1048576, split between head and tail when exceeded"),
           },
           async execute(args: Record<string, unknown>, context: ToolContext) {
             const result = background.run(args as never, context.sessionID)
@@ -109,7 +109,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         BackgroundStatus: tool({
-          description: "Get process metadata for a background command, including running/exited status and runtime. Use PullBackgroundOutput to read stdout/stderr.",
+          description: "Get process metadata for a background command by ID or name, including running/exited status and runtime. Use PullBackgroundOutput to read stdout/stderr text.",
           args: {
             id: schema.string().optional().describe("Background command ID"),
             name: schema.string().optional().describe("Background command name"),
@@ -120,14 +120,14 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         PullBackgroundOutput: tool({
-          description: "Pull retained in-memory stdout/stderr from a running or completed background command by line offset, line limit, or tail count. If requested lines were omitted, the response explains the error and available ranges.",
+          description: "Pull retained in-memory stdout/stderr from a running or completed background command by ID or name. Read either from lineOffset or with tail, not both. If requested lines were omitted, the response explains the error and available ranges.",
           args: {
             id: schema.string().optional().describe("Background command ID"),
             name: schema.string().optional().describe("Background command name"),
             stream: schema.string().optional().describe("stdout, stderr, or both; defaults to both"),
-            lineOffset: schema.number().optional().describe("Zero-based line offset to start reading from"),
-            limit: schema.number().optional().describe("Maximum number of lines to return; default 200, max 5000"),
-            tail: schema.number().optional().describe("Return the last N lines instead of reading from lineOffset"),
+            lineOffset: schema.number().optional().describe("Non-negative zero-based line offset to start reading from; defaults to 0 and is mutually exclusive with tail"),
+            limit: schema.number().optional().describe("Maximum number of lines to return; defaults to 200 and is capped at 5000"),
+            tail: schema.number().optional().describe("Return the last N lines instead of reading from lineOffset; must be non-negative"),
           },
           async execute(args: Record<string, unknown>) {
             publish()
@@ -135,7 +135,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         ListBackgroundCommands: tool({
-          description: "List background commands for this OpenCode process.",
+          description: "List background commands for this OpenCode process, including status, runtime, output availability, and retention metadata but not stdout/stderr text.",
           args: {},
           async execute() {
             publish()
@@ -143,7 +143,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         CancelBackgroundCommand: tool({
-          description: "Terminate a running background command by ID or name.",
+          description: "Terminate a running background command by ID or name. If the command already finished, this returns its current status unchanged.",
           args: {
             id: schema.string().optional().describe("Background command ID"),
             name: schema.string().optional().describe("Background command name"),
