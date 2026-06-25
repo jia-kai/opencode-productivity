@@ -1,10 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { BackgroundManager } from "../src/background.js"
+import { BackgroundManager, type BackgroundStatusValue } from "../src/background.js"
 import { productivitySocketPath, sendProductivityAction, startProductivityIpcServer } from "../src/ipc.js"
 import { handleActionRequest } from "../src/plugin.js"
 import {
@@ -15,9 +15,11 @@ import {
 } from "../src/registry.js"
 import { WakeupScheduler } from "../src/scheduler.js"
 import {
+  type BackgroundStatusSnapshot,
   deleteStatusSnapshot,
   detailedStatus,
   readStatusSnapshot,
+  sidebarBackgroundStatusCommands,
   statusSnapshotPath,
   writeStatusSnapshot,
 } from "../src/status.js"
@@ -65,6 +67,29 @@ test("detailedStatus only renders sections with entries", () => {
     ]),
     "Background status\n- bg-1 running: npm run build",
   )
+})
+
+test("sidebar background status caps rows and includes at most one exited command", () => {
+  const commands = [
+    backgroundStatus("bg-1", "exited"),
+    backgroundStatus("bg-2", "failed"),
+    backgroundStatus("bg-3", "running"),
+    backgroundStatus("bg-4", "running"),
+    backgroundStatus("bg-5", "running"),
+    backgroundStatus("bg-6", "running"),
+    backgroundStatus("bg-7", "running"),
+    backgroundStatus("bg-8", "running"),
+  ]
+
+  assert.deepEqual(
+    sidebarBackgroundStatusCommands(commands).map((command) => `${command.id}:${command.status}`),
+    ["bg-8:running", "bg-7:running", "bg-6:running", "bg-5:running", "bg-2:failed"],
+  )
+})
+
+test("compiled TUI does not import the OpenTUI JSX runtime", () => {
+  const compiled = readFileSync(path.join(process.cwd(), "dist", "src", "tui.js"), "utf8")
+  assert.equal(/@opentui\/solid\/jsx-runtime/.test(compiled), false)
 })
 
 test("productivity IPC sends action requests over a Unix socket", async () => {
@@ -422,6 +447,25 @@ async function waitForBackgroundOutput(background: BackgroundManager, id: string
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
   assert.fail(`background command ${id} did not exit with retained stdout/stderr`)
+}
+
+function backgroundStatus(id: string, status: BackgroundStatusValue): BackgroundStatusSnapshot {
+  return {
+    id,
+    name: id,
+    command: `echo ${id}`,
+    cwd: "/tmp",
+    status,
+    startedAt: "2026-06-23T12:00:00.000Z",
+    runtimeMs: 1000,
+    runtimeSeconds: 1,
+    processStatus: status === "running" ? "running pid 123" : `${status} exit 0`,
+    outputRetention: {
+      stdout: { maxBytes: 1024 * 1024, totalBytes: 0, retainedBytes: 0, omittedBytes: 0, truncated: false, headBytes: 0, tailBytes: 0 },
+      stderr: { maxBytes: 1024 * 1024, totalBytes: 0, retainedBytes: 0, omittedBytes: 0, truncated: false, headBytes: 0, tailBytes: 0 },
+    },
+    outputRanges: { stdout: [], stderr: [] },
+  }
 }
 
 function isSocketPermissionError(error: unknown): boolean {

@@ -2,14 +2,14 @@ import { rankPromptHistory, searchPromptHistory, type PromptHistoryMatch } from 
 import { sendProductivityAction, type ProductivityActionResponse } from "./ipc.js"
 import { createProductivityRegistry, type ProductivityInstanceSnapshot } from "./registry.js"
 import {
-  detailedStatus,
   readStatusSnapshot,
+  sidebarBackgroundStatusCommands,
   type BackgroundStatusSnapshot,
   type ProductivityStatusSnapshot,
 } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
 import { createComponent, createElement, insert, setProp } from "@opentui/solid"
-import { createSignal } from "solid-js"
+import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
 const HISTORY_INDEX_LIMIT = 5_000
@@ -267,19 +267,61 @@ function registerStatusSlots(api: any): () => void {
 }
 
 function DetailedStatus(props: { getSnapshot: () => ProductivityStatusSnapshot }) {
+  const wakeups = createMemo(() => props.getSnapshot().wakeups.filter((wakeup) => wakeup.status === "scheduled").slice(0, 5))
+  const commands = createMemo(() => sidebarBackgroundStatusCommands(props.getSnapshot().commands))
+
   const box = createElement("box")
   setProp(box, "flexDirection", "column")
-  insert(box, () => {
-    const snapshot = props.getSnapshot()
-    return detailedStatus(snapshot.wakeups, snapshot.commands).split("\n").filter(Boolean).map(renderStatusLine)
-  })
+  setProp(box, "gap", 1)
+  insert(box, [
+    StatusSection({
+      title: "Wakeup status",
+      rows: () => wakeups().map((wakeup) => `${wakeup.id} ${wakeup.label ?? wakeup.message}: ${wakeup.runAt}`),
+    }),
+    StatusSection({
+      title: "Background status",
+      rows: () => commands().map((command) => `${command.id} ${command.status}: ${command.command}`),
+    }),
+  ])
   return box
 }
 
-function renderStatusLine(line: string) {
+function StatusSection(props: { title: string; rows: () => string[] }) {
+  const [open, setOpen] = createSignal(true)
+  const foldable = () => props.rows().length > 0
+
+  const root = createElement("box")
+  setProp(root, "flexDirection", "column")
+
+  const header = createElement("box")
+  setProp(header, "flexDirection", "row")
+  setProp(header, "gap", 1)
+  setProp(header, "onMouseDown", () => foldable() && setOpen((value) => !value))
+
+  const chevron = createElement("text")
+  insert(chevron, () => foldable() ? open() ? "▼" : "▶" : "")
+
+  const title = createElement("text")
+  const bold = createElement("b")
+  insert(bold, props.title)
+  insert(title, bold)
+  insert(header, () => foldable() ? [chevron, title] : title)
+
+  const rows = createElement("box")
+  setProp(rows, "flexDirection", "column")
+  insert(rows, () => {
+    if (foldable() && !open()) return []
+    return props.rows().map(renderStatusLine)
+  })
+
+  insert(root, () => props.rows().length > 0 ? [header, rows] : [])
+  return root
+}
+
+function renderStatusLine(row: string) {
   const text = createElement("text")
   setProp(text, "wrapMode", "word")
-  insert(text, line)
+  insert(text, `- ${row}`)
   return text
 }
 

@@ -32,6 +32,18 @@ export function detailedStatus(wakeups: WakeupRecord[], commands: BackgroundStat
   ].join("\n")
 }
 
+export function sidebarBackgroundStatusCommands(commands: BackgroundStatusSnapshot[], limit = 5): BackgroundStatusSnapshot[] {
+  const max = Math.max(0, limit)
+  if (max === 0) return []
+
+  const recent = commands.slice().reverse()
+  const exited = recent.find((command) => command.status !== "running")
+  const runningLimit = exited ? max - 1 : max
+  const running = recent.filter((command) => command.status === "running").slice(0, runningLimit)
+
+  return exited && running.length < max ? [...running, exited] : running
+}
+
 export function writeStatusSnapshot(directory: string, wakeups: WakeupRecord[], commands: BackgroundCommandRecord[], ipc?: ProductivityStatusSnapshot["ipc"]): void {
   const file = statusSnapshotPath(directory)
   mkdirSync(path.dirname(file), { recursive: true })
