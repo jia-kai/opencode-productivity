@@ -1,6 +1,12 @@
 import { rankPromptHistory, searchPromptHistory, type PromptHistoryMatch } from "./history.js"
-import { sendProductivityAction, type ProductivityActionResponse } from "./ipc.js"
-import { createProductivityRegistry, type ProductivityInstanceSnapshot } from "./registry.js"
+import {
+  encodeProductivityTuiCommand,
+  productivityProjectID,
+  startProductivityTuiIpcServer,
+  type ProductivityActionResponse,
+  type ProductivityPeerSnapshot,
+  type ProductivityTuiIpcServer,
+} from "./ipc.js"
 import {
   readStatusSnapshot,
   sidebarBackgroundStatusCommands,
@@ -18,7 +24,46 @@ const PLUGIN_ID = "opencode-productivity-history"
 
 export const id = PLUGIN_ID
 
+let activeTuiIpc: ProductivityTuiIpcServer | undefined
+
 export const tui: TuiPlugin = async (api: any) => {
+  const directory = api.state?.path?.directory ?? "."
+  let tuiIpc: ProductivityTuiIpcServer | undefined
+  const [peers, setPeers] = createSignal<ProductivityPeerSnapshot[]>([])
+  const refreshPeers = () => {
+    setPeers(tuiIpc?.peers() ?? [])
+    api.renderer?.requestRender?.()
+  }
+  try {
+    tuiIpc = await startProductivityTuiIpcServer(directory, refreshPeers)
+    activeTuiIpc = tuiIpc
+  } catch (error) {
+    api.ui?.toast?.({ variant: "error", message: error instanceof Error ? error.message : "Failed to start productivity TUI IPC" })
+  }
+
+  const announce = () => {
+    if (!tuiIpc) return
+    const sessionID = currentSessionID(api)
+    void api.client?.tui?.publish?.({
+      directory: api.state?.path?.directory,
+      workspace: api.workspace?.current?.(),
+      body: {
+        type: "tui.command.execute",
+        properties: {
+          command: encodeProductivityTuiCommand({
+            op: "connect",
+            projectID: productivityProjectID(directory),
+            socketPath: tuiIpc.socketPath,
+            sessionID,
+          }),
+        },
+      },
+    }).catch(() => undefined)
+  }
+  announce()
+  const announceInterval = setInterval(announce, 1_000)
+  ;(announceInterval as { unref?: () => void }).unref?.()
+
   const unregister = api.keymap.registerLayer({
     priority: 100,
     commands: [
@@ -82,6 +127,11 @@ export const tui: TuiPlugin = async (api: any) => {
   const unregisterSlots = registerStatusSlots(api)
   if (typeof unregister === "function") api.lifecycle.onDispose(unregister)
   api.lifecycle.onDispose(unregisterSlots)
+  api.lifecycle.onDispose(() => {
+    clearInterval(announceInterval)
+    if (activeTuiIpc === tuiIpc) activeTuiIpc = undefined
+    void tuiIpc?.close()
+  })
 }
 
 function openBackgroundManager(api: any) {
@@ -184,10 +234,10 @@ async function sendAction(
   api: any,
   request: { action: "cancel-wakeup" | "cancel-background" | "pull-background-output"; target: string; stream?: "stdout" | "stderr" | "both"; tail?: number; limit?: number },
 ): Promise<ProductivityActionResponse> {
-  const socketPath = selectedInstance(api)?.socketPath
+  const peer = selectedInstance(api)
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  if (!socketPath) return { id, respondedAt: "", ok: false, title: "Productivity Action Unavailable", message: "No productivity plugin instance is available for this session yet." }
-  return await sendProductivityAction(socketPath, { id, ...request })
+  if (!peer || !activeTuiIpc) return { id, respondedAt: "", ok: false, title: "Productivity Action Unavailable", message: "No productivity plugin instance is available for this session yet." }
+  return await activeTuiIpc.send(peer, { id, ...request })
 }
 
 function showAlert(api: any, title: string, message: string) {
@@ -288,40 +338,16 @@ function DetailedStatus(props: { getSnapshot: () => ProductivityStatusSnapshot }
 
 function StatusSection(props: { title: string; rows: () => string[] }) {
   const [open, setOpen] = createSignal(true)
-  const foldable = () => props.rows().length > 0
-
-  const root = createElement("box")
-  setProp(root, "flexDirection", "column")
-
-  const header = createElement("box")
-  setProp(header, "flexDirection", "row")
-  setProp(header, "gap", 1)
-  setProp(header, "onMouseDown", () => foldable() && setOpen((value) => !value))
-
-  const chevron = createElement("text")
-  insert(chevron, () => foldable() ? open() ? "▼" : "▶" : "")
-
-  const title = createElement("text")
-  const bold = createElement("b")
-  insert(bold, props.title)
-  insert(title, bold)
-  insert(header, () => foldable() ? [chevron, title] : title)
-
-  const rows = createElement("box")
-  setProp(rows, "flexDirection", "column")
-  insert(rows, () => {
-    if (foldable() && !open()) return []
-    return props.rows().map(renderStatusLine)
-  })
-
-  insert(root, () => props.rows().length > 0 ? [header, rows] : [])
-  return root
-}
-
-function renderStatusLine(row: string) {
   const text = createElement("text")
   setProp(text, "wrapMode", "word")
-  insert(text, `- ${row}`)
+  setProp(text, "onMouseDown", () => props.rows().length > 0 && setOpen((value) => !value))
+  insert(text, () => {
+    const rows = props.rows()
+    if (rows.length === 0) return ""
+    const header = `${open() ? "▼" : "▶"} ${props.title}`
+    if (!open()) return header
+    return [header, ...rows.map((row) => `- ${row}`)].join("\n")
+  })
   return text
 }
 
@@ -334,7 +360,7 @@ function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
   if (instance) {
     return {
       updatedAt: instance.updatedAt,
-      ipc: { instanceID: instance.instanceID, serverPid: instance.serverPid, socketPath: instance.socketPath },
+      ipc: instance.socketPath ? { instanceID: instance.instanceID, serverPid: instance.serverPid, socketPath: instance.socketPath } : undefined,
       wakeups: instance.wakeups,
       commands: instance.commands,
     }
@@ -342,8 +368,14 @@ function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
   return readSnapshot(api)
 }
 
-function selectedInstance(api: any): ProductivityInstanceSnapshot | undefined {
-  return createProductivityRegistry(api.state?.path?.directory ?? ".").select(currentSessionID(api))
+function selectedInstance(api: any): ProductivityPeerSnapshot | undefined {
+  return selectFromPeers(activeTuiIpc?.peers() ?? [], currentSessionID(api))
+}
+
+function selectFromPeers(peers: ProductivityPeerSnapshot[], sessionID?: string): ProductivityPeerSnapshot | undefined {
+  const fresh = peers.slice().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  if (sessionID) return fresh.find((peer) => peer.sessions.includes(sessionID))
+  return fresh[0]
 }
 
 function currentSessionID(api: any): string | undefined {
@@ -352,13 +384,13 @@ function currentSessionID(api: any): string | undefined {
 }
 
 async function requestProductivityReset(api: any) {
-  const socketPath = selectedInstance(api)?.socketPath
+  const peer = selectedInstance(api)
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  if (!socketPath) {
+  if (!peer || !activeTuiIpc) {
     api.ui?.toast?.({ variant: "error", message: "No productivity plugin instance is available for this session yet." })
     return
   }
-  const response = await sendProductivityAction(socketPath, { id, action: "reset", target: "session.new" })
+  const response = await activeTuiIpc.send(peer, { id, action: "reset", target: "session.new" })
   if (!response.ok) {
     api.ui?.toast?.({
       variant: "error",

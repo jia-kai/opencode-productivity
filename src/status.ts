@@ -82,18 +82,10 @@ export function statusSnapshotPath(directory: string): string {
   return path.join(productivityRuntimeDirectory(directory), "productivity-state.json")
 }
 
-export function legacyStatusSnapshotPath(directory: string): string {
-  return path.join(directory, ".opencode", "productivity-state.json")
-}
-
-export function deleteLegacyStatusSnapshot(directory: string): void {
-  rmSync(legacyStatusSnapshotPath(directory), { force: true })
-}
-
 function removeEmptyRuntimeDirectory(directory: string): void {
   try {
     rmSync(productivityRuntimeDirectory(directory), { recursive: false })
   } catch {
-    // The directory may still contain the registry or another live file.
+    // The directory may still contain another live file.
   }
 }

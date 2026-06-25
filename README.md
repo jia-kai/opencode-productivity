@@ -12,7 +12,7 @@ This is my personal workflow tooling. I take no responsibility for its usability
 
 ## Platform
 
-This plugin only supports Unix-like systems. It uses Unix process behavior for background command management and a Unix-domain socket for TUI-to-server IPC. Windows is intentionally unsupported.
+This plugin only supports Unix-like systems. It uses Unix process behavior for background command management and Unix-domain sockets for TUI/server IPC. Windows is intentionally unsupported.
 
 ## Install
 
@@ -124,7 +124,7 @@ For a one-time wakeup, omit `repeatSeconds` or pass `repeatSeconds: 0`. For a re
 }
 ```
 
-State is intentionally in-memory and tied to the active OpenCode process, not isolated per session. Each wakeup/background command records the originating `sessionID` so wakeup messages, completion summaries, and user cancellation notices can be delivered back to that session best-effort. List/status/cancel APIs operate over the active plugin process state. Background stdout/stderr is memory-only: each stream keeps up to 1 MiB total, split between a head buffer and a tail buffer so both startup output and recent output remain visible after the limit is exceeded. `maxOutputBytes` can lower that per-command stream limit, but values above 1 MiB are rejected. `outputRetention.totalBytes` is the counter for the total stream size observed, including omitted bytes. No stdout/stderr temp files are written by the background tools, and the TUI status snapshot omits captured stdout/stderr. `/new` clears wakeups, kills running background processes, and clears background history/output from memory.
+State is intentionally in-memory and tied to the active OpenCode process, not isolated per session. Each wakeup/background command records the originating `sessionID` so wakeup messages, completion summaries, and user cancellation notices can be delivered back to that session best-effort. List/status/cancel APIs operate over the active plugin process state. Background stdout/stderr is memory-only: each stream keeps up to 1 MiB total, split between a head buffer and a tail buffer so both startup output and recent output remain visible after the limit is exceeded. `maxOutputBytes` can lower that per-command stream limit, but values above 1 MiB are rejected. `outputRetention.totalBytes` is the counter for the total stream size observed, including omitted bytes. No stdout/stderr temp files are written by the background tools, and the TUI status snapshot omits captured stdout/stderr. In the TUI, `/new` clears wakeups, kills running background processes, and clears background history/output for the plugin instance associated with the current session.
 
 ## Tests
 
@@ -182,4 +182,4 @@ The TUI shows productivity state in the right/sidebar panel:
 
 Use `/oc-wakeups` to view or cancel scheduled wakeups. Use `/oc-background` to view background commands, read retained stdout/stderr tails, or cancel a running command. `/new` clears wakeups, kills running background commands, and clears background history for the plugin instance associated with the current session.
 
-Status is best-effort and updates while OpenCode is running. Lightweight runtime status and registry files are written under the system temp directory, keyed by project path, so the plugin does not create project-local `.opencode` state files. Tool state remains in memory for the active OpenCode process, and captured stdout/stderr is not written to project files. If no plugin instance is associated with the current session yet, TUI management actions may be unavailable until that session uses one of the wakeup/background tools.
+Status is best-effort and updates while OpenCode is running. The TUI owns a Unix-domain socket and announces it through OpenCode's TUI command event stream; server plugin instances in the same project connect back to that socket and push live status snapshots. Multiple OpenCode instances in the same directory stay scoped by their originating session. A lightweight fallback status snapshot is still written under the system temp directory, keyed by project path, so the plugin does not create project-local `.opencode` state files. Tool state remains in memory for the active OpenCode process, and captured stdout/stderr is not written to project files. If no plugin instance is associated with the current session yet, TUI management actions may be unavailable until that session uses one of the wakeup/background tools.

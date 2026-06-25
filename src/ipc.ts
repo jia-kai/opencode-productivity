@@ -2,6 +2,8 @@ import { lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs"
 import net, { type Socket } from "node:net"
 import path from "node:path"
 import { hashProjectPath, productivityRuntimeRoot } from "./runtime-paths.js"
+import type { BackgroundStatusSnapshot, ProductivityStatusSnapshot } from "./status.js"
+import type { WakeupRecord } from "./scheduler.js"
 
 export type ProductivityActionType = "cancel-wakeup" | "cancel-background" | "pull-background-output" | "reset"
 
@@ -23,43 +25,112 @@ export interface ProductivityActionResponse {
   message: string
 }
 
-export interface ProductivityIpcServer {
+export type ProductivityActionHandler = (request: ProductivityActionRequest) => Promise<ProductivityActionResponse>
+
+export interface ProductivityPeerSnapshot extends ProductivityStatusSnapshot {
+  instanceID: string
+  serverPid: number
+  socketPath?: string
+  sessions: string[]
+}
+
+export interface ProductivityTuiIpcServer {
   socketPath: string
+  peers(): ProductivityPeerSnapshot[]
+  send(peer: ProductivityPeerSnapshot, request: Omit<ProductivityActionRequest, "requestedAt">): Promise<ProductivityActionResponse>
   close(): Promise<void>
 }
 
-export type ProductivityActionHandler = (request: ProductivityActionRequest) => Promise<ProductivityActionResponse>
+export interface ProductivityServerIpcClient {
+  close(): void
+  isClosed(): boolean
+  sendSnapshot(snapshot: ProductivityServerSnapshot): void
+}
 
-const MAX_REQUEST_BYTES = 64 * 1024
+export interface ProductivityServerSnapshot {
+  instanceID: string
+  serverPid: number
+  sessions: string[]
+  wakeups: WakeupRecord[]
+  commands: BackgroundStatusSnapshot[]
+}
+
+type ProductivityIpcMessage =
+  | { type: "hello"; snapshot: ProductivityServerSnapshot }
+  | { type: "snapshot"; snapshot: ProductivityServerSnapshot }
+  | { type: "request"; request: ProductivityActionRequest }
+  | { type: "response"; response: ProductivityActionResponse }
+
+export const PRODUCTIVITY_TUI_COMMAND_PREFIX = "opencode-productivity.ipc:"
+
 const DEFAULT_TIMEOUT_MS = 4_000
-const IDLE_SOCKET_TIMEOUT_MS = 5_000
+const MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 
-export async function startProductivityIpcServer(directory: string, handler: ProductivityActionHandler): Promise<ProductivityIpcServer> {
+export async function startProductivityTuiIpcServer(directory: string, onUpdate?: () => void): Promise<ProductivityTuiIpcServer> {
   assertUnixSocketSupport()
   cleanupStaleProductivitySockets()
-  const socketPath = productivitySocketPath(directory, process.pid)
+  const socketPath = productivityTuiSocketPath(directory, process.pid, Date.now().toString(36))
   mkdirSync(path.dirname(socketPath), { recursive: true })
   unlinkStaleSocket(socketPath)
 
-  const sockets = new Set<Socket>()
+  type Peer = {
+    socket: Socket
+    closed: boolean
+    snapshot?: ProductivityPeerSnapshot
+    pending: Map<string, (response: ProductivityActionResponse) => void>
+  }
+  const peers = new Set<Peer>()
+
+  const updatePeer = (peer: Peer, snapshot: ProductivityServerSnapshot) => {
+    peer.snapshot = {
+      updatedAt: new Date().toISOString(),
+      instanceID: snapshot.instanceID,
+      serverPid: snapshot.serverPid,
+      sessions: snapshot.sessions,
+      wakeups: snapshot.wakeups,
+      commands: snapshot.commands,
+    }
+    onUpdate?.()
+  }
+
   const server = net.createServer((socket) => {
-    sockets.add(socket)
+    const peer: Peer = { socket, closed: false, pending: new Map() }
+    peers.add(peer)
     let data = ""
-    socket.setTimeout(IDLE_SOCKET_TIMEOUT_MS, () => socket.destroy())
     socket.setEncoding("utf8")
     socket.on("data", (chunk: string) => {
       data += chunk
-      if (data.length > MAX_REQUEST_BYTES) {
-        socket.end(serializeResponse(errorResponse("", "Productivity Action Too Large", "The TUI action request exceeded the IPC size limit.")))
+      if (data.length > MAX_MESSAGE_BYTES) {
+        socket.destroy()
         return
       }
-      const newline = data.indexOf("\n")
-      if (newline === -1) return
-      const line = data.slice(0, newline)
-      void respondToLine(line, socket, handler)
+      while (true) {
+        const newline = data.indexOf("\n")
+        if (newline === -1) return
+        const line = data.slice(0, newline)
+        data = data.slice(newline + 1)
+        const message = parseMessage(line)
+        if (!message) continue
+        if (message.type === "hello" || message.type === "snapshot") updatePeer(peer, message.snapshot)
+        if (message.type === "response") {
+          const resolve = peer.pending.get(message.response.id)
+          if (resolve) {
+            peer.pending.delete(message.response.id)
+            resolve(message.response)
+          }
+        }
+      }
     })
     socket.on("error", () => undefined)
-    socket.on("close", () => sockets.delete(socket))
+    socket.on("close", () => {
+      peer.closed = true
+      peers.delete(peer)
+      for (const [id, resolve] of peer.pending) {
+        resolve(errorResponse(id, "Productivity Action Unavailable", "The productivity server disconnected."))
+      }
+      peer.pending.clear()
+      onUpdate?.()
+    })
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -78,8 +149,27 @@ export async function startProductivityIpcServer(directory: string, handler: Pro
 
   return {
     socketPath,
+    peers() {
+      return [...peers].flatMap((peer) => peer.snapshot ? [peer.snapshot] : [])
+    },
+    async send(snapshot, request) {
+      const peer = [...peers].find((item) => item.snapshot?.instanceID === snapshot.instanceID)
+      if (!peer || peer.closed) return errorResponse(request.id, "Productivity Action Unavailable", "The selected productivity server is not connected.")
+      const payload: ProductivityActionRequest = { ...request, requestedAt: new Date().toISOString() }
+      return await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          peer.pending.delete(payload.id)
+          resolve(errorResponse(payload.id, "Productivity Action Timed Out", "The server plugin did not respond to the TUI request."))
+        }, DEFAULT_TIMEOUT_MS)
+        peer.pending.set(payload.id, (response) => {
+          clearTimeout(timeout)
+          resolve(response)
+        })
+        peer.socket.write(serializeMessage({ type: "request", request: payload }))
+      })
+    },
     close: () => new Promise((resolve) => {
-      for (const socket of sockets) socket.destroy()
+      for (const peer of peers) peer.socket.destroy()
       server.close(() => {
         unlinkStaleSocket(socketPath)
         resolve()
@@ -88,56 +178,93 @@ export async function startProductivityIpcServer(directory: string, handler: Pro
   }
 }
 
-export async function sendProductivityAction(
-  directoryOrSocketPath: string,
-  request: Omit<ProductivityActionRequest, "requestedAt">,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<ProductivityActionResponse> {
+export function connectProductivityServerToTui(socketPath: string, snapshot: ProductivityServerSnapshot, handler: ProductivityActionHandler, onClose?: () => void): ProductivityServerIpcClient {
   assertUnixSocketSupport()
-  const payload: ProductivityActionRequest = { ...request, requestedAt: new Date().toISOString() }
-  const socketPath = directoryOrSocketPath.endsWith(".sock") ? directoryOrSocketPath : productivitySocketPath(directoryOrSocketPath)
-  return await new Promise((resolve) => {
-    const socket = net.createConnection(socketPath)
-    let response = ""
-    let settled = false
-    const timeout = setTimeout(() => {
-      settle(errorResponse(payload.id, "Productivity Action Timed Out", "The server plugin did not respond to the TUI request."))
-    }, timeoutMs)
-
-    const settle = (value: ProductivityActionResponse) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      socket.destroy()
-      resolve(value)
-    }
-
-    socket.setEncoding("utf8")
-    socket.on("connect", () => socket.write(`${JSON.stringify(payload)}\n`))
-    socket.on("data", (chunk: string) => {
-      response += chunk
-      const newline = response.indexOf("\n")
-      if (newline === -1) return
-      settle(parseResponse(response.slice(0, newline), payload.id))
-    })
-    socket.on("error", (error: Error) => {
-      settle(errorResponse(payload.id, "Productivity Action Unavailable", error.message))
-    })
-    socket.on("end", () => {
-      if (!settled && response.trim()) settle(parseResponse(response.trim(), payload.id))
-    })
+  const socket = net.createConnection(socketPath)
+  let connected = false
+  let closed = false
+  let data = ""
+  let latest = snapshot
+  const send = (message: ProductivityIpcMessage) => {
+    if (!connected || closed) return
+    socket.write(serializeMessage(message))
+  }
+  socket.setEncoding("utf8")
+  socket.on("connect", () => {
+    connected = true
+    send({ type: "hello", snapshot: latest })
   })
+  socket.on("data", (chunk: string) => {
+    data += chunk
+    if (data.length > MAX_MESSAGE_BYTES) {
+      socket.destroy()
+      return
+    }
+    while (true) {
+      const newline = data.indexOf("\n")
+      if (newline === -1) return
+      const line = data.slice(0, newline)
+      data = data.slice(newline + 1)
+      const message = parseMessage(line)
+      if (message?.type === "request") {
+        void handler(message.request).then((response) => send({ type: "response", response }))
+      }
+    }
+  })
+  socket.on("error", () => undefined)
+  socket.on("close", () => {
+    closed = true
+    onClose?.()
+  })
+
+  return {
+    close() {
+      closed = true
+      socket.destroy()
+    },
+    isClosed() {
+      return closed
+    },
+    sendSnapshot(snapshot) {
+      latest = snapshot
+      send({ type: "snapshot", snapshot })
+    },
+  }
 }
 
-export function productivitySocketPath(directory: string, pid = process.pid): string {
-  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-${pid}.sock`)
+export function productivityTuiSocketPath(directory: string, pid = process.pid, nonce = "tui"): string {
+  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-tui-${pid}-${nonce}.sock`)
+}
+
+export function productivityProjectID(directory: string): string {
+  return hashProjectPath(directory)
+}
+
+export function encodeProductivityTuiCommand(payload: { op: "connect"; projectID: string; socketPath: string; sessionID?: string }): string {
+  return `${PRODUCTIVITY_TUI_COMMAND_PREFIX}${encodeURIComponent(JSON.stringify(payload))}`
+}
+
+export function decodeProductivityTuiCommand(command: unknown): { op: "connect"; projectID: string; socketPath: string; sessionID?: string } | undefined {
+  if (typeof command !== "string" || !command.startsWith(PRODUCTIVITY_TUI_COMMAND_PREFIX)) return undefined
+  try {
+    const parsed = JSON.parse(decodeURIComponent(command.slice(PRODUCTIVITY_TUI_COMMAND_PREFIX.length))) as Partial<{ op: string; projectID: string; socketPath: string; sessionID: string }>
+    if (parsed.op !== "connect" || typeof parsed.projectID !== "string" || typeof parsed.socketPath !== "string") return undefined
+    return {
+      op: "connect",
+      projectID: parsed.projectID,
+      socketPath: parsed.socketPath,
+      sessionID: typeof parsed.sessionID === "string" ? parsed.sessionID : undefined,
+    }
+  } catch {
+    return undefined
+  }
 }
 
 export function cleanupStaleProductivitySockets(): void {
   try {
     for (const entry of readdirSync(productivityRuntimeRoot(), { withFileTypes: true })) {
       if (!entry.isSocket() && !entry.isFile()) continue
-      const match = /^.+-(\d+)\.sock$/.exec(entry.name)
+      const match = /^.+-tui-(\d+)-.+\.sock$/.exec(entry.name)
       if (!match) continue
       const pid = Number(match[1])
       const socketPath = path.join(productivityRuntimeRoot(), entry.name)
@@ -152,62 +279,20 @@ function assertUnixSocketSupport(): void {
   if (process.platform === "win32") throw new Error("opencode-productivity only supports Unix platforms.")
 }
 
-async function respondToLine(line: string, socket: Socket, handler: ProductivityActionHandler): Promise<void> {
-  const parsed = parseRequest(line)
-  if (!parsed.ok) {
-    socket.end(serializeResponse(errorResponse(parsed.id, "Productivity Action Failed", parsed.message)))
-    return
-  }
-  try {
-    socket.end(serializeResponse(await handler(parsed.request)))
-  } catch (error) {
-    socket.end(serializeResponse(errorResponse(parsed.request.id, "Productivity Action Failed", error instanceof Error ? error.message : String(error))))
-  }
+function serializeMessage(message: ProductivityIpcMessage): string {
+  return `${JSON.stringify(message)}\n`
 }
 
-function parseRequest(line: string): { ok: true; request: ProductivityActionRequest } | { ok: false; id: string; message: string } {
+function parseMessage(line: string): ProductivityIpcMessage | undefined {
   try {
-    const parsed = JSON.parse(line) as Partial<ProductivityActionRequest>
-    const id = typeof parsed.id === "string" ? parsed.id : ""
-    if (!isAction(parsed.action)) return { ok: false, id, message: "Unknown productivity action." }
-    if (typeof parsed.id !== "string" || typeof parsed.target !== "string") return { ok: false, id, message: "Malformed productivity action request." }
-    return {
-      ok: true,
-      request: {
-        id: parsed.id,
-        requestedAt: typeof parsed.requestedAt === "string" ? parsed.requestedAt : "",
-        action: parsed.action,
-        target: parsed.target,
-        stream: isStream(parsed.stream) ? parsed.stream : undefined,
-        tail: typeof parsed.tail === "number" ? parsed.tail : undefined,
-        limit: typeof parsed.limit === "number" ? parsed.limit : undefined,
-      },
-    }
-  } catch (error) {
-    return { ok: false, id: "", message: error instanceof Error ? error.message : String(error) }
+    const parsed = JSON.parse(line) as Partial<ProductivityIpcMessage>
+    if ((parsed.type === "hello" || parsed.type === "snapshot") && isServerSnapshot(parsed.snapshot)) return parsed as ProductivityIpcMessage
+    if (parsed.type === "request" && isActionRequest(parsed.request)) return parsed as ProductivityIpcMessage
+    if (parsed.type === "response" && isActionResponse(parsed.response)) return parsed as ProductivityIpcMessage
+    return undefined
+  } catch {
+    return undefined
   }
-}
-
-function parseResponse(line: string, fallbackID: string): ProductivityActionResponse {
-  try {
-    const parsed = JSON.parse(line) as Partial<ProductivityActionResponse>
-    if (typeof parsed.title !== "string" || typeof parsed.message !== "string") {
-      return errorResponse(fallbackID, "Productivity Action Failed", "Malformed productivity action response.")
-    }
-    return {
-      id: typeof parsed.id === "string" ? parsed.id : fallbackID,
-      respondedAt: typeof parsed.respondedAt === "string" ? parsed.respondedAt : "",
-      ok: parsed.ok === true,
-      title: parsed.title,
-      message: parsed.message,
-    }
-  } catch (error) {
-    return errorResponse(fallbackID, "Productivity Action Failed", error instanceof Error ? error.message : String(error))
-  }
-}
-
-function serializeResponse(response: ProductivityActionResponse): string {
-  return `${JSON.stringify(response)}\n`
 }
 
 function errorResponse(id: string, title: string, message: string): ProductivityActionResponse {
@@ -236,6 +321,24 @@ function isAction(value: unknown): value is ProductivityActionType {
   return value === "cancel-wakeup" || value === "cancel-background" || value === "pull-background-output" || value === "reset"
 }
 
-function isStream(value: unknown): value is "stdout" | "stderr" | "both" {
-  return value === "stdout" || value === "stderr" || value === "both"
+function isActionRequest(value: unknown): value is ProductivityActionRequest {
+  if (typeof value !== "object" || value === null) return false
+  const item = value as Partial<ProductivityActionRequest>
+  return typeof item.id === "string" && typeof item.target === "string" && isAction(item.action)
+}
+
+function isActionResponse(value: unknown): value is ProductivityActionResponse {
+  if (typeof value !== "object" || value === null) return false
+  const item = value as Partial<ProductivityActionResponse>
+  return typeof item.id === "string" && typeof item.title === "string" && typeof item.message === "string" && typeof item.ok === "boolean"
+}
+
+function isServerSnapshot(value: unknown): value is ProductivityServerSnapshot {
+  if (typeof value !== "object" || value === null) return false
+  const item = value as Partial<ProductivityServerSnapshot>
+  return typeof item.instanceID === "string"
+    && typeof item.serverPid === "number"
+    && Array.isArray(item.sessions)
+    && Array.isArray(item.wakeups)
+    && Array.isArray(item.commands)
 }

@@ -1,18 +1,18 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
-import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { BackgroundManager, type BackgroundStatusValue } from "../src/background.js"
-import { productivitySocketPath, sendProductivityAction, startProductivityIpcServer } from "../src/ipc.js"
-import { handleActionRequest } from "../src/plugin.js"
 import {
-  createProductivityRegistry,
-  productivityRegistryPath,
-  readProductivityRegistry,
-  selectProductivityInstance,
-} from "../src/registry.js"
+  connectProductivityServerToTui,
+  decodeProductivityTuiCommand,
+  encodeProductivityTuiCommand,
+  productivityProjectID,
+  productivityTuiSocketPath,
+  startProductivityTuiIpcServer,
+} from "../src/ipc.js"
+import { handleActionRequest } from "../src/plugin.js"
 import { WakeupScheduler } from "../src/scheduler.js"
 import {
   type BackgroundStatusSnapshot,
@@ -92,77 +92,145 @@ test("compiled TUI does not import the OpenTUI JSX runtime", () => {
   assert.equal(/@opentui\/solid\/jsx-runtime/.test(compiled), false)
 })
 
-test("productivity IPC sends action requests over a Unix socket", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  let server: Awaited<ReturnType<typeof startProductivityIpcServer>> | undefined
-  try {
-    try {
-      server = await startProductivityIpcServer(dir, async (request) => ({
-        id: request.id,
-        respondedAt: "2026-06-23T12:00:00.000Z",
-        ok: true,
-        title: `Handled ${request.action}`,
-        message: `${request.target} ${request.stream ?? ""} ${request.tail ?? ""} ${request.limit ?? ""}`.trim(),
-      }))
-    } catch (error) {
-      if (isSocketPermissionError(error)) return
-      throw error
-    }
-    assert.equal(existsSync(productivitySocketPath(dir)), true)
-    assert.equal(server.socketPath, productivitySocketPath(dir))
-    assert.equal(server.socketPath.startsWith(path.join(tmpdir(), "opencode-productivity")), true)
-
-    const response = await sendProductivityAction(server.socketPath, {
-      id: "action-1",
-      action: "pull-background-output",
-      target: "bg-1",
-      stream: "stdout",
-      tail: 5,
-      limit: 10,
-    })
-    assert.equal(response.ok, true)
-    assert.equal(response.id, "action-1")
-    assert.equal(response.title, "Handled pull-background-output")
-    assert.equal(response.message, "bg-1 stdout 5 10")
-  } finally {
-    await server?.close()
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("productivity IPC socket path stays short for deep project paths", () => {
+test("productivity TUI IPC socket path stays short for deep project paths", () => {
   const deepDirectory = path.join(tmpdir(), ...Array.from({ length: 40 }, (_, index) => `deep-${index}`))
-  const socketPath = productivitySocketPath(deepDirectory, 12345)
+  const socketPath = productivityTuiSocketPath(deepDirectory, 12345, "nonce")
   assert.equal(socketPath.startsWith(path.join(tmpdir(), "opencode-productivity")), true)
   assert.ok(socketPath.length < 104, socketPath)
 })
 
-test("productivity IPC can close with an idle connected client", async () => {
+test("productivity TUI command encoding round trips socket discovery payloads", () => {
+  const command = encodeProductivityTuiCommand({
+    op: "connect",
+    projectID: productivityProjectID("/tmp/project"),
+    socketPath: "/tmp/opencode-productivity/tui.sock",
+    sessionID: "ses_123",
+  })
+  assert.deepEqual(decodeProductivityTuiCommand(command), {
+    op: "connect",
+    projectID: productivityProjectID("/tmp/project"),
+    socketPath: "/tmp/opencode-productivity/tui.sock",
+    sessionID: "ses_123",
+  })
+  assert.equal(decodeProductivityTuiCommand("session.new"), undefined)
+})
+
+test("TUI-owned IPC routes actions to the selected same-directory instance", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  let server: Awaited<ReturnType<typeof startProductivityIpcServer>> | undefined
+  let tui: Awaited<ReturnType<typeof startProductivityTuiIpcServer>> | undefined
+  const handled: string[] = []
   try {
     try {
-      server = await startProductivityIpcServer(dir, async (request) => ({
-        id: request.id,
-        respondedAt: "",
-        ok: true,
-        title: "ok",
-        message: "ok",
-      }))
+      tui = await startProductivityTuiIpcServer(dir)
     } catch (error) {
       if (isSocketPermissionError(error)) return
       throw error
     }
-    const socket = net.createConnection(server.socketPath)
-    await new Promise<void>((resolve) => socket.on("connect", resolve))
-    await Promise.race([
-      server.close(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("IPC close timed out with idle client")), 1_000)),
-    ])
-    server = undefined
-    socket.destroy()
+    const a = connectProductivityServerToTui(tui.socketPath, {
+      instanceID: "instance-a",
+      serverPid: process.pid,
+      sessions: ["session-a"],
+      wakeups: [],
+      commands: [],
+    }, async (request) => {
+      handled.push(`a:${request.action}:${request.target}`)
+      return { id: request.id, respondedAt: "", ok: true, title: "a", message: request.target }
+    })
+    const b = connectProductivityServerToTui(tui.socketPath, {
+      instanceID: "instance-b",
+      serverPid: process.pid,
+      sessions: ["session-b"],
+      wakeups: [],
+      commands: [],
+    }, async (request) => {
+      handled.push(`b:${request.action}:${request.target}`)
+      return { id: request.id, respondedAt: "", ok: true, title: "b", message: request.target }
+    })
+
+    await waitFor(() => tui!.peers().length === 2)
+    const peer = tui.peers().find((item) => item.sessions.includes("session-b"))
+    assert.equal(peer?.instanceID, "instance-b")
+
+    const response = await tui.send(peer!, { id: "action-b", action: "cancel-background", target: "bg-b" })
+    assert.equal(response.ok, true)
+    assert.equal(response.title, "b")
+    assert.deepEqual(handled, ["b:cancel-background:bg-b"])
+
+    a.close()
+    b.close()
   } finally {
-    await server?.close()
+    await tui?.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("TUI-owned IPC /new reset is scoped to the selected same-directory instance", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
+  let tui: Awaited<ReturnType<typeof startProductivityTuiIpcServer>> | undefined
+  const schedulerA = new WakeupScheduler()
+  const schedulerB = new WakeupScheduler()
+  const backgroundA = new BackgroundManager(undefined, dir)
+  const backgroundB = new BackgroundManager(undefined, dir)
+  try {
+    try {
+      tui = await startProductivityTuiIpcServer(dir)
+    } catch (error) {
+      if (isSocketPermissionError(error)) return
+      throw error
+    }
+    schedulerA.schedule({ name: "wakeup-a", message: "a", delaySeconds: 60 }, "session-a")
+    schedulerB.schedule({ name: "wakeup-b", message: "b", delaySeconds: 60 }, "session-b")
+    backgroundA.run({ name: "bg-a", command: "sleep 10" }, "session-a")
+    backgroundB.run({ name: "bg-b", command: "sleep 10" }, "session-b")
+
+    const publishA = () => clientA.sendSnapshot({
+      instanceID: "instance-a",
+      serverPid: process.pid,
+      sessions: ["session-a"],
+      wakeups: schedulerA.list(),
+      commands: backgroundA.list().map(backgroundStatusViewForTest),
+    })
+    const publishB = () => clientB.sendSnapshot({
+      instanceID: "instance-b",
+      serverPid: process.pid,
+      sessions: ["session-b"],
+      wakeups: schedulerB.list(),
+      commands: backgroundB.list().map(backgroundStatusViewForTest),
+    })
+    const clientA = connectProductivityServerToTui(tui.socketPath, {
+      instanceID: "instance-a",
+      serverPid: process.pid,
+      sessions: ["session-a"],
+      wakeups: schedulerA.list(),
+      commands: backgroundA.list().map(backgroundStatusViewForTest),
+    }, (request) => handleActionRequest(request, { scheduler: schedulerA, background: backgroundA, publish: publishA }))
+    const clientB = connectProductivityServerToTui(tui.socketPath, {
+      instanceID: "instance-b",
+      serverPid: process.pid,
+      sessions: ["session-b"],
+      wakeups: schedulerB.list(),
+      commands: backgroundB.list().map(backgroundStatusViewForTest),
+    }, (request) => handleActionRequest(request, { scheduler: schedulerB, background: backgroundB, publish: publishB }))
+
+    await waitFor(() => tui!.peers().length === 2)
+    const peerA = tui.peers().find((item) => item.sessions.includes("session-a"))
+    assert.equal(peerA?.instanceID, "instance-a")
+
+    const response = await tui.send(peerA!, { id: "action-reset-a", action: "reset", target: "session.new" })
+    assert.equal(response.ok, true)
+    assert.equal(schedulerA.list().filter((wakeup) => wakeup.status === "scheduled").length, 0)
+    assert.equal(backgroundA.list().length, 0)
+    assert.equal(schedulerB.list().filter((wakeup) => wakeup.status === "scheduled").length, 1)
+    assert.equal(backgroundB.list().length, 1)
+
+    clientA.close()
+    clientB.close()
+  } finally {
+    schedulerA.dispose()
+    schedulerB.dispose()
+    backgroundA.dispose()
+    backgroundB.dispose()
+    await tui?.close()
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -188,21 +256,6 @@ test("TUI action handler resets wakeups and background commands", async () => {
   } finally {
     scheduler.dispose()
     background.dispose()
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("productivity IPC reports unavailable server", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  try {
-    const response = await sendProductivityAction(dir, {
-      id: "action-1",
-      action: "cancel-background",
-      target: "bg-1",
-    }, 50)
-    assert.equal(response.ok, false)
-    assert.equal(response.title, "Productivity Action Unavailable")
-  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -315,126 +368,28 @@ test("status snapshot advertises IPC socket path without output captures", () =>
   }
 })
 
-test("status and registry files are kept outside the project .opencode directory", () => {
+test("status snapshot is kept outside the project .opencode directory", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
   try {
     writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
-    createProductivityRegistry(dir).write({
-      instanceID: "instance-runtime-path",
-      serverPid: process.pid,
-      socketPath: "/tmp/opencode-productivity/runtime.sock",
-      ipc: { instanceID: "instance-runtime-path", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/runtime.sock" },
-      sessions: [],
-      wakeups: [],
-      commands: [],
-    })
 
     assert.equal(existsSync(path.join(dir, ".opencode")), false)
     assert.equal(statusSnapshotPath(dir).startsWith(path.join(tmpdir(), "opencode-productivity", "state")), true)
-    assert.equal(productivityRegistryPath(dir).startsWith(path.join(tmpdir(), "opencode-productivity", "state")), true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test("status and registry cleanup removes empty temp runtime files", () => {
+test("status cleanup removes empty temp runtime files", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  const registry = createProductivityRegistry(dir)
   try {
     writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
-    registry.write({
-      instanceID: "instance-cleanup",
-      serverPid: process.pid,
-      socketPath: "/tmp/opencode-productivity/cleanup.sock",
-      ipc: { instanceID: "instance-cleanup", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/cleanup.sock" },
-      sessions: [],
-      wakeups: [],
-      commands: [],
-    })
 
     assert.equal(existsSync(statusSnapshotPath(dir)), true)
-    assert.equal(existsSync(productivityRegistryPath(dir)), true)
 
-    registry.remove("instance-cleanup")
     deleteStatusSnapshot(dir)
 
     assert.equal(existsSync(statusSnapshotPath(dir)), false)
-    assert.equal(existsSync(productivityRegistryPath(dir)), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("productivity registry tracks multiple instances and selects by session", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  const registry = createProductivityRegistry(dir)
-  try {
-    registry.write({
-      instanceID: "instance-a",
-      serverPid: process.pid,
-      socketPath: "/tmp/opencode-productivity/a.sock",
-      ipc: { instanceID: "instance-a", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/a.sock" },
-      sessions: ["session-a"],
-      wakeups: [],
-      commands: [],
-    })
-    await new Promise((resolve) => setTimeout(resolve, 2))
-    registry.write({
-      instanceID: "instance-b",
-      serverPid: process.pid,
-      socketPath: "/tmp/opencode-productivity/b.sock",
-      ipc: { instanceID: "instance-b", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/b.sock" },
-      sessions: ["session-b"],
-      wakeups: [],
-      commands: [],
-    })
-
-    const stored = readProductivityRegistry(dir)
-    assert.equal(stored.instances.length, 2)
-    assert.equal(selectProductivityInstance(stored, "session-a")?.instanceID, "instance-a")
-    assert.equal(selectProductivityInstance(stored, "session-b")?.instanceID, "instance-b")
-    assert.equal(selectProductivityInstance(stored, "unknown-session"), undefined)
-    assert.equal(selectProductivityInstance(stored)?.instanceID, "instance-b")
-
-    const connected = registry.select("session-a")
-    assert.equal(connected?.instanceID, "instance-a")
-    const afterConnect = readProductivityRegistry(dir)
-    assert.equal(afterConnect.instances.find((instance) => instance.instanceID === "instance-a")?.connected, true)
-    assert.equal(afterConnect.instances.find((instance) => instance.instanceID === "instance-a")?.connectedSessionID, "session-a")
-    assert.equal(selectProductivityInstance(afterConnect, "session-a")?.instanceID, "instance-a")
-
-    registry.remove("instance-b")
-    const afterRemove = readProductivityRegistry(dir)
-    assert.deepEqual(afterRemove.instances.map((instance) => instance.instanceID), ["instance-a"])
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("productivity registry prunes entries whose PID no longer exists", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  const registry = createProductivityRegistry(dir)
-  try {
-    registry.write({
-      instanceID: "dead-instance",
-      serverPid: 999_999_999,
-      socketPath: "/tmp/opencode-productivity/dead.sock",
-      ipc: { instanceID: "dead-instance", serverPid: 999_999_999, socketPath: "/tmp/opencode-productivity/dead.sock" },
-      sessions: ["dead-session"],
-      wakeups: [],
-      commands: [],
-    })
-    registry.write({
-      instanceID: "live-instance",
-      serverPid: process.pid,
-      socketPath: "/tmp/opencode-productivity/live.sock",
-      ipc: { instanceID: "live-instance", serverPid: process.pid, socketPath: "/tmp/opencode-productivity/live.sock" },
-      sessions: ["live-session"],
-      wakeups: [],
-      commands: [],
-    })
-
-    assert.deepEqual(readProductivityRegistry(dir).instances.map((instance) => instance.instanceID), ["live-instance"])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -466,6 +421,19 @@ function backgroundStatus(id: string, status: BackgroundStatusValue): Background
     },
     outputRanges: { stdout: [], stderr: [] },
   }
+}
+
+function backgroundStatusViewForTest(command: ReturnType<BackgroundManager["list"]>[number]): BackgroundStatusSnapshot {
+  const { stdout: _stdout, stderr: _stderr, ...status } = command
+  return status
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  assert.fail("condition was not met")
 }
 
 function isSocketPermissionError(error: unknown): boolean {

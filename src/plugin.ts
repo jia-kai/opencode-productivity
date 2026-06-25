@@ -1,8 +1,14 @@
 import { BackgroundManager, type BackgroundCommandRecord } from "./background.js"
 import { WakeupScheduler } from "./scheduler.js"
-import { startProductivityIpcServer, type ProductivityActionRequest, type ProductivityActionResponse } from "./ipc.js"
-import { createProductivityRegistry, cleanupStaleProductivityRuntimeFiles, deleteLegacyProductivityRegistry } from "./registry.js"
-import { deleteLegacyStatusSnapshot, deleteStatusSnapshot, writeStatusSnapshot } from "./status.js"
+import {
+  connectProductivityServerToTui,
+  decodeProductivityTuiCommand,
+  productivityProjectID,
+  type ProductivityActionRequest,
+  type ProductivityActionResponse,
+  type ProductivityServerIpcClient,
+} from "./ipc.js"
+import { deleteStatusSnapshot, writeStatusSnapshot } from "./status.js"
 import { handleTuiCommand } from "./tui-command.js"
 import { localTimeContext } from "./time.js"
 import type { PluginContext, ToolContext } from "./types.js"
@@ -24,35 +30,25 @@ export function createProductivityPlugin(tool: ToolFactory) {
   if (!schema) throw new Error("@opencode-ai/plugin tool.schema is required")
 
   return async function ProductivityPlugin(ctx: PluginContext) {
-    cleanupStaleProductivityRuntimeFiles()
-    deleteLegacyStatusSnapshot(ctx.directory)
-    deleteLegacyProductivityRegistry(ctx.directory)
     const scheduler = new WakeupScheduler(ctx.client)
     const background = new BackgroundManager(ctx.client, ctx.directory)
-    const registry = createProductivityRegistry(ctx.directory)
     const instanceID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-    let ipcSocketPath = ""
+    const tuiConnections = new Map<string, ProductivityServerIpcClient>()
+    const actionHandler = (request: ProductivityActionRequest) => handleActionRequest(request, { scheduler, background, publish })
+    const snapshot = () => ({
+      instanceID,
+      serverPid: process.pid,
+      sessions: knownSessions(scheduler.list(), background.list()),
+      wakeups: scheduler.list(),
+      commands: background.list().map(backgroundStatusView),
+    })
     const publish = () => {
-      const wakeups = scheduler.list()
-      const commands = background.list()
-      const ipc = ipcSocketPath ? { instanceID, serverPid: process.pid, socketPath: ipcSocketPath } : undefined
-      writeStatusSnapshot(ctx.directory, wakeups, commands, ipc)
-      if (ipcSocketPath) {
-        registry.write({
-          instanceID,
-          serverPid: process.pid,
-          socketPath: ipcSocketPath,
-          ipc,
-          sessions: knownSessions(wakeups, commands),
-          wakeups,
-          commands,
-        })
-      }
+      const current = snapshot()
+      writeStatusSnapshot(ctx.directory, scheduler.list(), background.list())
+      for (const connection of tuiConnections.values()) connection.sendSnapshot(current)
     }
     const publishInterval = setInterval(publish, 1_000)
     publishInterval.unref?.()
-    const ipc = await startProductivityIpcServer(ctx.directory, (request) => handleActionRequest(request, { scheduler, background, publish }))
-    ipcSocketPath = ipc.socketPath
     publish()
 
     return {
@@ -156,28 +152,60 @@ export function createProductivityPlugin(tool: ToolFactory) {
         }),
       },
       event: async ({ event }: { event: { type?: string } & Record<string, unknown> }) => {
+        if (event.type === "tui.command.execute") {
+          const command = extractCommand(event)
+          const request = decodeProductivityTuiCommand(command)
+          if (request && request.projectID === productivityProjectID(ctx.directory)) {
+            connectToTui(request.socketPath)
+            return
+          }
+        }
         if (event.type === "tui.command.execute" || event.type === "command.executed") {
           if (await handleTuiCommand(event, { client: ctx.client, scheduler, background })) publish()
         }
       },
       "tui.command.execute": async (input: unknown) => {
+        const request = decodeProductivityTuiCommand(extractCommand(input))
+        if (request && request.projectID === productivityProjectID(ctx.directory)) {
+          connectToTui(request.socketPath)
+          return
+        }
         if (await handleTuiCommand(input, { client: ctx.client, scheduler, background })) publish()
       },
       dispose: async () => {
         clearInterval(publishInterval)
-        await ipc.close()
-        ipcSocketPath = ""
+        for (const connection of tuiConnections.values()) connection.close()
+        tuiConnections.clear()
         scheduler.dispose()
         background.dispose()
-        registry.remove(instanceID)
         deleteStatusSnapshot(ctx.directory)
       },
+    }
+
+    function connectToTui(socketPath: string) {
+      const existing = tuiConnections.get(socketPath)
+      if (existing && !existing.isClosed()) {
+        existing.sendSnapshot(snapshot())
+        return
+      }
+      existing?.close()
+      const connection = connectProductivityServerToTui(socketPath, snapshot(), actionHandler, () => {
+        if (tuiConnections.get(socketPath) === connection) tuiConnections.delete(socketPath)
+      })
+      tuiConnections.set(socketPath, connection)
+      publish()
     }
   }
 }
 
 function knownSessions(wakeups: Array<{ sessionID?: string }>, commands: Array<{ sessionID?: string }>): string[] {
   return [...new Set([...wakeups, ...commands].map((item) => item.sessionID).filter((value): value is string => typeof value === "string" && value.length > 0))]
+}
+
+function extractCommand(input: unknown): unknown {
+  if (typeof input !== "object" || input === null) return undefined
+  const item = input as { command?: unknown; properties?: { command?: unknown } }
+  return item.command ?? item.properties?.command
 }
 
 export async function handleActionRequest(request: ProductivityActionRequest, state: {
