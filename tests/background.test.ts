@@ -267,7 +267,8 @@ test("completion delivery includes only tiny stdout", async () => {
   await waitForPromptCount(prompts, 1)
 
   assert.equal(prompts.length, 1)
-  assert.match(prompts[0], /Background command bg-/)
+  assert.match(prompts[0], /Background command delivery-tiny-output finished/)
+  assert.equal(prompts[0].includes(tiny.id), false)
   assert.match(prompts[0], /stdout \(2 bytes\):\nok/)
   assert.equal(prompts[0].includes("secret-error"), false)
 

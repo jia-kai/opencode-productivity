@@ -15,6 +15,7 @@ import {
 } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
 import { createComponent, createElement, insert, setProp } from "@opentui/solid"
+import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
@@ -326,29 +327,81 @@ function DetailedStatus(props: { getSnapshot: () => ProductivityStatusSnapshot }
   insert(box, [
     StatusSection({
       title: "Wakeup status",
-      rows: () => wakeups().map((wakeup) => `${wakeup.id} ${wakeup.label ?? wakeup.message}: ${wakeup.runAt}`),
+      rows: () => wakeups().map((wakeup) => ({ text: `${wakeup.name} ${formatSidebarWakeupTime(wakeup.runAt)}: ${wakeup.message}` })),
     }),
     StatusSection({
       title: "Background status",
-      rows: () => commands().map((command) => `${command.id} ${command.status}: ${command.command}`),
+      rows: () => commands().map(formatSidebarBackgroundRow),
     }),
   ])
   return box
 }
 
-function StatusSection(props: { title: string; rows: () => string[] }) {
+interface StatusRow {
+  text: string
+  fg?: string
+}
+
+function StatusSection(props: { title: string; rows: () => StatusRow[] }) {
   const [open, setOpen] = createSignal(true)
-  const text = createElement("text")
-  setProp(text, "wrapMode", "word")
-  setProp(text, "onMouseDown", () => props.rows().length > 0 && setOpen((value) => !value))
-  insert(text, () => {
+  const box = createElement("box")
+  setProp(box, "flexDirection", "column")
+
+  const header = createElement("text")
+  setProp(header, "wrapMode", "word")
+  setProp(header, "attributes", TextAttributes.BOLD)
+  setProp(header, "onMouseDown", () => props.rows().length > 0 && setOpen((value) => !value))
+  insert(header, () => {
     const rows = props.rows()
     if (rows.length === 0) return ""
-    const header = `${open() ? "▼" : "▶"} ${props.title}`
-    if (!open()) return header
-    return [header, ...rows.map((row) => `- ${row}`)].join("\n")
+    return `${open() ? "▼" : "▶"} ${props.title}`
   })
+  insert(box, header)
+
+  const rowsBox = createElement("box")
+  setProp(rowsBox, "flexDirection", "column")
+  insert(rowsBox, () => {
+    if (!open()) return []
+    return props.rows().map((row) => StatusRowText(row))
+  })
+  insert(box, rowsBox)
+  return box
+}
+
+function StatusRowText(row: StatusRow) {
+  const text = createElement("text")
+  setProp(text, "wrapMode", "word")
+  if (row.fg) setProp(text, "fg", row.fg)
+  insert(text, `- ${row.text}`)
   return text
+}
+
+function formatSidebarBackgroundRow(command: BackgroundStatusSnapshot): StatusRow {
+  const exitCode = command.exitCode
+  if (command.status === "running" || typeof exitCode !== "number") {
+    return { text: `${command.id} ${command.status}: ${command.command}` }
+  }
+  return {
+    text: `${command.id} exit ${exitCode}: ${command.command}`,
+    fg: exitCode === 0 ? "white" : "red",
+  }
+}
+
+function formatSidebarWakeupTime(runAt: string, now = new Date()): string {
+  const date = new Date(runAt)
+  if (!Number.isFinite(date.getTime())) return runAt
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  if (isSameLocalDay(date, now)) return time
+  const dateOptions: Intl.DateTimeFormatOptions = date.getFullYear() === now.getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" }
+  return `${date.toLocaleDateString(undefined, dateOptions)} ${time}`
+}
+
+function isSameLocalDay(left: Date, right: Date): boolean {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate()
 }
 
 function readSnapshot(api: any) {
