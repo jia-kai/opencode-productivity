@@ -90,7 +90,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         RunInBackground: tool({
-          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name and command; stdout/stderr are retained in memory and read with PullBackgroundOutput.",
+          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name and command; stdout/stderr are retained in memory and read with PullBackgroundOutput. The tool will notify this session when the command finishes, so usually do not schedule a separate wakeup just to check completion.",
           args: {
             name: schema.string().describe("Short unique name for this background command, 40 characters or fewer"),
             command: schema.string().describe("Non-empty shell command to run"),

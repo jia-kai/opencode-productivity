@@ -104,7 +104,7 @@ For local project development, this repo uses explicit file wrappers in `.openco
 - `ScheduleWakeup`: schedule a one-shot or repeated reminder with a required short unique `name` plus exactly one of `runAt` or `delaySeconds`.
 - `ListWakeups`: list active and recently fired wakeups, including name, ID, run time, and due timing.
 - `CancelWakeup`: cancel a wakeup by `id` or `name`.
-- `RunInBackground`: start a non-interactive shell command with a required short unique `name`.
+- `RunInBackground`: start a non-interactive shell command with a required short unique `name`. The tool notifies the originating session when the command finishes, so a separate wakeup is usually unnecessary just to check completion.
 - `BackgroundStatus`: inspect one background command by `id` or `name`, including process metadata, runtime, and whether output is available.
 - `PullBackgroundOutput`: read retained stdout/stderr from a running or completed background command by `id` or `name`, using `lineOffset` plus `limit`, or `tail`. If requested lines have been omitted from memory, the response includes an explanatory `message` plus `availableLineRanges`.
 - `ListBackgroundCommands`: list background command status.
