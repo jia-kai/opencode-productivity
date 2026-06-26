@@ -42,6 +42,26 @@ test("pulls stdout by line offset and tail after command exits", async () => {
   manager.dispose()
 })
 
+test("tail pulls tolerate default and sentinel line offsets", async () => {
+  const manager = new BackgroundManager(undefined, process.cwd())
+  const started = manager.run({ name: "tail-offset-defaults", command: "printf 'one\\ntwo\\nthree\\n'" })
+  await waitForStatus(manager, started.id, "exited")
+
+  const defaultOffset = manager.pull({ id: started.id, stream: "stdout", lineOffset: 0, tail: 2, limit: 10 })
+  assert.equal(defaultOffset.stdout?.text, "two\nthree")
+  assert.equal(defaultOffset.tail, 2)
+
+  const sentinelOffset = manager.pull({ id: started.id, stream: "stdout", lineOffset: -1, tail: 2, limit: 10 })
+  assert.equal(sentinelOffset.stdout?.text, "two\nthree")
+  assert.equal(sentinelOffset.tail, 2)
+
+  assert.throws(
+    () => manager.pull({ id: started.id, stream: "stdout", lineOffset: 1, tail: 2, limit: 10 }),
+    /provide either tail or lineOffset/,
+  )
+  manager.dispose()
+})
+
 test("pulls stderr from memory after command exits", async () => {
   const manager = new BackgroundManager(undefined, process.cwd())
   const started = manager.run({ name: "stderr", command: "printf 'bad\\n' >&2" })
@@ -59,6 +79,17 @@ test("requires unique background command names", () => {
   assert.throws(() => manager.run({ command: "printf missing" } as never), /name is required/)
   assert.throws(() => manager.run({ name: "bad-tail", command: "printf bad", maxOutputBytes: -1 }), /maxOutputBytes/)
   assert.throws(() => manager.run({ name: "huge-tail", command: "printf bad", maxOutputBytes: 1024 * 1024 + 1 }), /1048576/)
+  manager.dispose()
+})
+
+test("timeoutSeconds zero is treated as no timeout", async () => {
+  const manager = new BackgroundManager(undefined, process.cwd())
+  const started = manager.run({ name: "no-timeout", command: "printf ok", timeoutSeconds: 0 })
+  await waitForStatus(manager, started.id, "exited")
+
+  const done = manager.get(started.id)
+  assert.equal(done.status, "exited")
+  assert.equal(done.stdout, "ok")
   manager.dispose()
 })
 

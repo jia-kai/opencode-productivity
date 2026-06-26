@@ -48,10 +48,11 @@ export class WakeupScheduler {
     const name = normalizeName(args.name)
     if (this.findByName(name)) throw new Error(`duplicate wakeup name: ${name}`)
     if (!args.message?.trim()) throw new Error("message is required")
-    if ((args.runAt ? 1 : 0) + (args.delaySeconds === undefined ? 0 : 1) !== 1) {
+    const delaySeconds = args.delaySeconds === 0 && args.runAt ? undefined : args.delaySeconds
+    if ((args.runAt ? 1 : 0) + (delaySeconds === undefined ? 0 : 1) !== 1) {
       throw new Error("provide exactly one of runAt or delaySeconds")
     }
-    if (args.delaySeconds !== undefined && args.delaySeconds < 0) {
+    if (delaySeconds !== undefined && delaySeconds < 0) {
       throw new Error("delaySeconds must be non-negative")
     }
     const repeatSeconds = normalizeRepeatSeconds(args.repeatSeconds)
@@ -59,7 +60,7 @@ export class WakeupScheduler {
       throw new Error(`repeatSeconds must be at least ${DEFAULTS.minRepeatSeconds}`)
     }
 
-    const fireAt = args.runAt ? parseRunAt(args.runAt) : now + Math.round(args.delaySeconds ?? 0) * 1_000
+    const fireAt = args.runAt ? parseRunAt(args.runAt) : now + Math.round(delaySeconds ?? 0) * 1_000
     const record: InternalWakeup = {
       id: `wakeup-${this.nextID++}`,
       name,

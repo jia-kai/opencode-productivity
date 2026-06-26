@@ -38,6 +38,16 @@ test("enforces repeat minimum and mutually exclusive time fields", () => {
   scheduler.dispose()
 })
 
+test("runAt schedules tolerate a zero delaySeconds default", () => {
+  const scheduler = new WakeupScheduler()
+  const runAt = new Date(120_000).toISOString()
+  const record = scheduler.schedule({ name: "absolute", message: "x", runAt, delaySeconds: 0 }, "session-1", 0)
+
+  assert.equal(record.runAt, runAt)
+  assert.equal(record.status, "scheduled")
+  scheduler.dispose()
+})
+
 test("clear removes all wakeup history", () => {
   const scheduler = new WakeupScheduler()
   scheduler.schedule({ name: "one", message: "x", delaySeconds: 60 })

@@ -54,12 +54,12 @@ export function createProductivityPlugin(tool: ToolFactory) {
     return {
       tool: {
         ScheduleWakeup: tool({
-          description: "Schedule a one-shot or repeated wakeup for the current OpenCode session. Requires a short unique name, a message, and exactly one of runAt or delaySeconds.",
+          description: "Schedule a one-shot or repeated wakeup for the current OpenCode session. Requires a short unique name, a message, and exactly one of runAt or delaySeconds. Omit delaySeconds when using runAt.",
           args: {
             name: schema.string().describe("Short unique name for this wakeup, 40 characters or fewer"),
             message: schema.string().describe("Message to deliver when the wakeup fires"),
-            runAt: schema.string().optional().describe("ISO datetime for the wakeup. Mutually exclusive with delaySeconds."),
-            delaySeconds: schema.number().optional().describe("Non-negative delay in seconds from now. Mutually exclusive with runAt."),
+            runAt: schema.string().optional().describe("ISO datetime for the wakeup. Omit delaySeconds when using this."),
+            delaySeconds: schema.number().optional().describe("Non-negative delay in seconds from now. Omit this when runAt is provided."),
             repeatSeconds: schema.number().optional().describe("Optional repeat interval in seconds. Omit or use 0 for one-shot; positive repeat intervals must be at least 60."),
             label: schema.string().optional().describe("Optional short label"),
           },
@@ -95,7 +95,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
             name: schema.string().describe("Short unique name for this background command, 40 characters or fewer"),
             command: schema.string().describe("Non-empty shell command to run"),
             cwd: schema.string().optional().describe("Working directory; defaults to the current OpenCode project directory"),
-            timeoutSeconds: schema.number().optional().describe("Optional positive timeout in seconds; timed-out commands are terminated"),
+            timeoutSeconds: schema.number().optional().describe("Optional positive timeout in seconds; omit or use 0 for no timeout"),
             maxOutputBytes: schema.number().optional().describe("Maximum in-memory stdout/stderr bytes per stream; defaults to and is capped at 1048576, split between head and tail when exceeded"),
           },
           async execute(args: Record<string, unknown>, context: ToolContext) {
@@ -116,12 +116,12 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         PullBackgroundOutput: tool({
-          description: "Pull retained in-memory stdout/stderr from a running or completed background command by ID or name. Read either from lineOffset or with tail, not both. If requested lines were omitted, the response explains the error and available ranges.",
+          description: "Pull retained in-memory stdout/stderr from a running or completed background command by ID or name. Use lineOffset for forward reads, or tail for the last N lines. When using tail, omit lineOffset. If requested lines were omitted, the response explains the error and available ranges.",
           args: {
             id: schema.string().optional().describe("Background command ID"),
             name: schema.string().optional().describe("Background command name"),
             stream: schema.string().optional().describe("stdout, stderr, or both; defaults to both"),
-            lineOffset: schema.number().optional().describe("Non-negative zero-based line offset to start reading from; defaults to 0 and is mutually exclusive with tail"),
+            lineOffset: schema.number().optional().describe("Non-negative zero-based line offset to start reading from; defaults to 0. Omit this when tail is provided."),
             limit: schema.number().optional().describe("Maximum number of lines to return; defaults to 200 and is capped at 5000"),
             tail: schema.number().optional().describe("Return the last N lines instead of reading from lineOffset; must be non-negative"),
           },

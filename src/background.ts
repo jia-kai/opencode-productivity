@@ -87,7 +87,8 @@ export class BackgroundManager {
     if (this.activeCount() >= DEFAULTS.maxActiveBackgroundCommands) {
       throw new Error(`maximum active background commands reached (${DEFAULTS.maxActiveBackgroundCommands})`)
     }
-    if (args.timeoutSeconds !== undefined && args.timeoutSeconds <= 0) {
+    const timeoutSeconds = args.timeoutSeconds === 0 ? undefined : args.timeoutSeconds
+    if (timeoutSeconds !== undefined && timeoutSeconds < 0) {
       throw new Error("timeoutSeconds must be positive")
     }
     const maxOutputBytes =
@@ -120,11 +121,11 @@ export class BackgroundManager {
       proc.stderr.on("data", (chunk) => this.captureOutput(record, "stderr", chunk))
       proc.on("error", (error) => void this.finish(id, "failed", undefined, undefined, error.message))
       proc.on("close", (code, signal) => void this.finish(id, record.status === "timeout" ? "timeout" : record.status === "cancelled" ? "cancelled" : "exited", code, signal))
-      if (args.timeoutSeconds) {
+      if (timeoutSeconds) {
         record.timeout = setTimeout(() => {
           record.status = "timeout"
           this.terminate(record)
-        }, args.timeoutSeconds * 1_000)
+        }, timeoutSeconds * 1_000)
         record.timeout.unref?.()
       }
     } catch (error) {
@@ -163,9 +164,31 @@ export class BackgroundManager {
     if (!["stdout", "stderr", "both"].includes(stream)) throw new Error("stream must be stdout, stderr, or both")
     const limit = clampLineLimit(args.limit)
     const rawTail = args.tail === undefined ? undefined : validateNonNegativeInteger(args.tail, "tail")
-    const lineOffset = args.lineOffset === undefined ? 0 : validateNonNegativeInteger(args.lineOffset, "lineOffset")
-    const tail = rawTail === 0 && args.lineOffset !== undefined ? undefined : rawTail
-    if (tail !== undefined && args.lineOffset !== undefined) throw new Error("provide either tail or lineOffset, not both")
+    const explicitLineOffset = args.lineOffset
+    if (rawTail !== undefined && rawTail > 0) {
+      if (explicitLineOffset !== undefined && explicitLineOffset !== 0 && explicitLineOffset !== -1) {
+        throw new Error("provide either tail or lineOffset, not both")
+      }
+      const tail = rawTail
+      const lineOffset = 0
+
+      return {
+        id: record.id,
+        name: record.name,
+        status: record.status,
+        processStatus: processStatus(record),
+        runtimeMs: runtimeMs(record),
+        runtimeSeconds: runtimeSeconds(record),
+        stream,
+        lineOffset,
+        limit,
+        tail,
+        stdout: stream === "stdout" || stream === "both" ? readOutputBuffer(record.stdoutBuffer, { lineOffset, limit, tail }) : undefined,
+        stderr: stream === "stderr" || stream === "both" ? readOutputBuffer(record.stderrBuffer, { lineOffset, limit, tail }) : undefined,
+      }
+    }
+
+    const lineOffset = explicitLineOffset === undefined ? 0 : validateNonNegativeInteger(explicitLineOffset, "lineOffset")
 
     return {
       id: record.id,
@@ -177,9 +200,8 @@ export class BackgroundManager {
       stream,
       lineOffset,
       limit,
-      tail,
-      stdout: stream === "stdout" || stream === "both" ? readOutputBuffer(record.stdoutBuffer, { lineOffset, limit, tail }) : undefined,
-      stderr: stream === "stderr" || stream === "both" ? readOutputBuffer(record.stderrBuffer, { lineOffset, limit, tail }) : undefined,
+      stdout: stream === "stdout" || stream === "both" ? readOutputBuffer(record.stdoutBuffer, { lineOffset, limit }) : undefined,
+      stderr: stream === "stderr" || stream === "both" ? readOutputBuffer(record.stderrBuffer, { lineOffset, limit }) : undefined,
     }
   }
 
