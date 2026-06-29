@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { BackgroundManager, type BackgroundStatusValue } from "../src/background.js"
@@ -16,12 +16,8 @@ import { handleActionRequest } from "../src/plugin.js"
 import { WakeupScheduler } from "../src/scheduler.js"
 import {
   type BackgroundStatusSnapshot,
-  deleteStatusSnapshot,
   detailedStatus,
-  readStatusSnapshot,
   sidebarBackgroundStatusCommands,
-  statusSnapshotPath,
-  writeStatusSnapshot,
 } from "../src/status.js"
 
 test("detailedStatus is empty when no wakeups or background commands are present", () => {
@@ -315,82 +311,6 @@ test("TUI action handler pulls retained background output", async () => {
   } finally {
     scheduler.dispose()
     background.dispose()
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("status snapshot does not persist captured stdout or stderr", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  try {
-    writeStatusSnapshot(dir, [], [
-      {
-        id: "bg-1",
-        name: "build",
-        command: "npm run build",
-        cwd: "/tmp",
-        status: "exited",
-        startedAt: "2026-06-23T12:00:00.000Z",
-        endedAt: "2026-06-23T12:00:01.000Z",
-        runtimeMs: 1000,
-        runtimeSeconds: 1,
-        processStatus: "exited exit 0",
-        stdout: "secret stdout",
-        stderr: "secret stderr",
-        outputRetention: {
-          stdout: { maxBytes: 1024 * 1024, totalBytes: 13, retainedBytes: 13, omittedBytes: 0, truncated: false, headBytes: 13, tailBytes: 13 },
-          stderr: { maxBytes: 1024 * 1024, totalBytes: 13, retainedBytes: 13, omittedBytes: 0, truncated: false, headBytes: 13, tailBytes: 13 },
-        },
-        outputRanges: {
-          stdout: [{ startLine: 0, endLine: 1 }],
-          stderr: [{ startLine: 0, endLine: 1 }],
-        },
-      },
-    ])
-
-    const command = readStatusSnapshot(dir).commands[0] as Record<string, unknown>
-    assert.equal(command.stdout, undefined)
-    assert.equal(command.stderr, undefined)
-    assert.equal(command.outputRetention && typeof command.outputRetention === "object", true)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("status snapshot advertises IPC socket path without output captures", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  try {
-    writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
-    const snapshot = readStatusSnapshot(dir)
-    assert.equal(snapshot.ipc?.socketPath, "/tmp/opencode-productivity/test.sock")
-    assert.deepEqual(snapshot.commands, [])
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("status snapshot is kept outside the project .opencode directory", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  try {
-    writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
-
-    assert.equal(existsSync(path.join(dir, ".opencode")), false)
-    assert.equal(statusSnapshotPath(dir).startsWith(path.join(tmpdir(), "opencode-productivity", "state")), true)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("status cleanup removes empty temp runtime files", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-status-"))
-  try {
-    writeStatusSnapshot(dir, [], [], { socketPath: "/tmp/opencode-productivity/test.sock" })
-
-    assert.equal(existsSync(statusSnapshotPath(dir)), true)
-
-    deleteStatusSnapshot(dir)
-
-    assert.equal(existsSync(statusSnapshotPath(dir)), false)
-  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })

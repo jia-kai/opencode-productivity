@@ -5,14 +5,6 @@ export function productivityRuntimeRoot(): string {
   return path.join(tmpdir(), "opencode-productivity")
 }
 
-export function productivityRuntimeStateRoot(): string {
-  return path.join(productivityRuntimeRoot(), "state")
-}
-
-export function productivityRuntimeDirectory(directory: string): string {
-  return path.join(productivityRuntimeStateRoot(), hashProjectPath(directory))
-}
-
 export function hashProjectPath(value: string): string {
   let hash = 2166136261
   for (let i = 0; i < value.length; i++) {

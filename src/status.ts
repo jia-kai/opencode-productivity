@@ -1,8 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import path from "node:path"
 import type { BackgroundCommandRecord } from "./background.js"
 import type { WakeupRecord } from "./scheduler.js"
-import { productivityRuntimeDirectory } from "./runtime-paths.js"
 
 export type BackgroundStatusSnapshot = Omit<BackgroundCommandRecord, "stdout" | "stderr">
 
@@ -42,50 +39,4 @@ export function sidebarBackgroundStatusCommands(commands: BackgroundStatusSnapsh
   const running = recent.filter((command) => command.status === "running").slice(0, runningLimit)
 
   return exited && running.length < max ? [...running, exited] : running
-}
-
-export function writeStatusSnapshot(directory: string, wakeups: WakeupRecord[], commands: BackgroundCommandRecord[], ipc?: ProductivityStatusSnapshot["ipc"]): void {
-  const file = statusSnapshotPath(directory)
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify({ updatedAt: new Date().toISOString(), ipc, wakeups, commands: commands.map(stripOutput) }, null, 2))
-}
-
-export function deleteStatusSnapshot(directory: string): void {
-  rmSync(statusSnapshotPath(directory), { force: true })
-  removeEmptyRuntimeDirectory(directory)
-}
-
-export function readStatusSnapshot(directory: string): ProductivityStatusSnapshot {
-  try {
-    const parsed = JSON.parse(readFileSync(statusSnapshotPath(directory), "utf8")) as Partial<ProductivityStatusSnapshot>
-    return {
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
-      ipc: isIpcSnapshot(parsed.ipc) ? parsed.ipc : undefined,
-      wakeups: Array.isArray(parsed.wakeups) ? parsed.wakeups as WakeupRecord[] : [],
-      commands: Array.isArray(parsed.commands) ? parsed.commands as BackgroundStatusSnapshot[] : [],
-    }
-  } catch {
-    return { updatedAt: "", wakeups: [], commands: [] }
-  }
-}
-
-function isIpcSnapshot(value: unknown): value is { socketPath: string } {
-  return typeof value === "object" && value !== null && typeof (value as { socketPath?: unknown }).socketPath === "string"
-}
-
-function stripOutput(command: BackgroundCommandRecord): BackgroundStatusSnapshot {
-  const { stdout: _stdout, stderr: _stderr, ...status } = command
-  return status
-}
-
-export function statusSnapshotPath(directory: string): string {
-  return path.join(productivityRuntimeDirectory(directory), "productivity-state.json")
-}
-
-function removeEmptyRuntimeDirectory(directory: string): void {
-  try {
-    rmSync(productivityRuntimeDirectory(directory), { recursive: false })
-  } catch {
-    // The directory may still contain another live file.
-  }
 }

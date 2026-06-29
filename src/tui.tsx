@@ -1,4 +1,4 @@
-import { rankPromptHistory, searchPromptHistory, type PromptHistoryMatch } from "./history.js"
+import { searchPromptHistory, type PromptHistoryMatch } from "./history.js"
 import {
   encodeProductivityTuiCommand,
   productivityProjectID,
@@ -8,7 +8,6 @@ import {
   type ProductivityTuiIpcServer,
 } from "./ipc.js"
 import {
-  readStatusSnapshot,
   sidebarBackgroundStatusCommands,
   type BackgroundStatusSnapshot,
   type ProductivityStatusSnapshot,
@@ -20,7 +19,6 @@ import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
 const HISTORY_INDEX_LIMIT = 5_000
-const HISTORY_VISIBLE_LIMIT = 160
 const PLUGIN_ID = "opencode-productivity-history"
 
 export const id = PLUGIN_ID
@@ -265,25 +263,18 @@ function openHistorySelect(api: any, initialQuery: string) {
   const allMatches = searchPromptHistory("", { limit: HISTORY_INDEX_LIMIT })
   const byID = new Map(allMatches.map((match) => [match.id, match]))
 
-  api.ui.dialog.replace(() => HistorySearchDialog({ api, initialQuery, allMatches, byID }))
+  api.ui.dialog.replace(() => HistorySearchDialog({ api, allMatches, byID }))
 }
 
 function HistorySearchDialog(props: {
   api: any
-  initialQuery: string
   allMatches: PromptHistoryMatch[]
   byID: Map<string, PromptHistoryMatch>
 }) {
-  const rank = (query: string) => toHistoryOptions(rankPromptHistory(props.allMatches, query.trim(), HISTORY_VISIBLE_LIMIT))
-  const [options, setOptions] = createSignal(rank(props.initialQuery))
   return props.api.ui.DialogSelect({
     title: "Prompt History",
     placeholder: `Filter ${props.allMatches.length} prompts`,
-    get options() {
-      return options()
-    },
-    skipFilter: true,
-    onFilter: (query: string) => setOptions(rank(query)),
+    options: toHistoryOptions(props.allMatches),
     onSelect: (option: { value: string }) => {
       const match = props.byID.get(option.value)
       if (!match) return
@@ -404,10 +395,6 @@ function isSameLocalDay(left: Date, right: Date): boolean {
     && left.getDate() === right.getDate()
 }
 
-function readSnapshot(api: any) {
-  return readStatusSnapshot(api.state?.path?.directory ?? ".")
-}
-
 function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
   const instance = selectedInstance(api)
   if (instance) {
@@ -418,7 +405,7 @@ function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
       commands: instance.commands,
     }
   }
-  return readSnapshot(api)
+  return { updatedAt: "", wakeups: [], commands: [] }
 }
 
 function selectedInstance(api: any): ProductivityPeerSnapshot | undefined {

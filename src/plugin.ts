@@ -8,7 +8,6 @@ import {
   type ProductivityActionResponse,
   type ProductivityServerIpcClient,
 } from "./ipc.js"
-import { deleteStatusSnapshot, writeStatusSnapshot } from "./status.js"
 import { handleTuiCommand } from "./tui-command.js"
 import { localTimeContext } from "./time.js"
 import type { PluginContext, ToolContext } from "./types.js"
@@ -44,7 +43,6 @@ export function createProductivityPlugin(tool: ToolFactory) {
     })
     const publish = () => {
       const current = snapshot()
-      writeStatusSnapshot(ctx.directory, scheduler.list(), background.list())
       for (const connection of tuiConnections.values()) connection.sendSnapshot(current)
     }
     const publishInterval = setInterval(publish, 1_000)
@@ -178,7 +176,6 @@ export function createProductivityPlugin(tool: ToolFactory) {
         tuiConnections.clear()
         scheduler.dispose()
         background.dispose()
-        deleteStatusSnapshot(ctx.directory)
       },
     }
 
