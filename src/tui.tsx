@@ -441,10 +441,10 @@ async function requestProductivityReset(api: any) {
 
 function toHistoryOptions(matches: PromptHistoryMatch[]) {
   return matches.map((match) => ({
-    title: oneLine(match.prompt).slice(0, 100),
+    title: wrapPreview(match.prompt, 88, 4),
     value: match.id,
     description: new Date(match.createdAt).toLocaleString(),
-    footer: oneLine(match.prompt).slice(0, 140),
+    footer: wrapPreview(match.prompt, 88, 6),
   }))
 }
 
@@ -467,4 +467,47 @@ async function insertPrompt(api: any, text: string) {
 
 function oneLine(value: string): string {
   return value.trim().replace(/\s+/g, " ")
+}
+
+function wrapPreview(value: string, width: number, maxLines: number): string {
+  const words = oneLine(value).split(" ").filter(Boolean)
+  if (words.length === 0) return ""
+
+  const lines: string[] = []
+  let line = ""
+  for (const word of words) {
+    if (lines.length >= maxLines) break
+    if (word.length > width) {
+      if (line) {
+        lines.push(line)
+        line = ""
+        if (lines.length >= maxLines) break
+      }
+      for (let index = 0; index < word.length && lines.length < maxLines; index += width) {
+        const chunk = word.slice(index, index + width)
+        if (chunk.length === width && index + width < word.length && lines.length === maxLines - 1) {
+          lines.push(`${chunk.slice(0, Math.max(0, width - 3))}...`)
+          break
+        }
+        lines.push(chunk)
+      }
+      continue
+    }
+
+    const next = line ? `${line} ${word}` : word
+    if (next.length <= width) {
+      line = next
+      continue
+    }
+    lines.push(line)
+    line = word
+  }
+  if (line && lines.length < maxLines) lines.push(line)
+
+  const rendered = lines.slice(0, maxLines)
+  if (words.join(" ").length > rendered.join(" ").length && rendered.length > 0) {
+    const last = rendered[rendered.length - 1]
+    rendered[rendered.length - 1] = `${last.slice(0, Math.max(0, width - 3))}...`
+  }
+  return rendered.join("\n")
 }

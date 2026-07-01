@@ -21,10 +21,10 @@ test("dedupePrompts keeps most recent normalized prompt", () => {
   assert.equal(result[0].id, "new")
 })
 
-test("rankPromptHistory orders by score then recency and truncates", () => {
+test("rankPromptHistory orders by recency then score and truncates", () => {
   const result = rankPromptHistory(
     [
-      { id: "1", prompt: "deploy app", createdAt: 1 },
+      { id: "1", prompt: "deploy", createdAt: 1 },
       { id: "2", prompt: "deploy api", createdAt: 2 },
       { id: "3", prompt: "unrelated", createdAt: 3 },
     ],

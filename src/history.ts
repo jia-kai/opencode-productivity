@@ -62,7 +62,7 @@ export function rankPromptHistory(
   return dedupePrompts(entries)
     .map((entry) => ({ ...entry, score: fuzzyScore(query, entry.prompt) }))
     .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || b.createdAt - a.createdAt)
+    .sort((a, b) => b.createdAt - a.createdAt || b.score - a.score)
     .slice(0, limit)
 }
 
