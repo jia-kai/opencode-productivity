@@ -235,7 +235,7 @@ async function sendAction(
 ): Promise<ProductivityActionResponse> {
   const peer = selectedInstance(api)
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  if (!peer || !activeTuiIpc) return { id, respondedAt: "", ok: false, title: "Productivity Action Unavailable", message: "No productivity plugin instance is available for this session yet." }
+  if (!peer || !activeTuiIpc) return { id, respondedAt: "", ok: false, title: "Productivity Action Unavailable", message: "No productivity plugin instance is available for this conversation yet." }
   return await activeTuiIpc.send(peer, { id, ...request })
 }
 
@@ -427,7 +427,7 @@ async function requestProductivityReset(api: any) {
   const peer = selectedInstance(api)
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
   if (!peer || !activeTuiIpc) {
-    api.ui?.toast?.({ variant: "error", message: "No productivity plugin instance is available for this session yet." })
+    api.ui?.toast?.({ variant: "error", message: "No productivity plugin instance is available for this conversation yet." })
     return
   }
   const response = await activeTuiIpc.send(peer, { id, action: "reset", target: "session.new" })
