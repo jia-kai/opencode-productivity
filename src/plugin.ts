@@ -88,7 +88,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
         RunInBackground: tool({
-          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name and command; stdout/stderr are retained in memory and read with PullBackgroundOutput. The tool will notify this session when the command finishes, so usually do not schedule a separate wakeup just to check completion.",
+          description: "Run a non-interactive shell command in the background for the current session. Requires a short unique name and command; stdout/stderr are retained in memory and read with PullBackgroundOutput.",
           args: {
             name: schema.string().describe("Short unique name for this background command, 40 characters or fewer"),
             command: schema.string().describe("Non-empty shell command to run"),
@@ -99,7 +99,12 @@ export function createProductivityPlugin(tool: ToolFactory) {
           async execute(args: Record<string, unknown>, context: ToolContext) {
             const result = background.run(args as never, context.sessionID)
             publish()
-            return toolJson({ command: result })
+            return toolJson({
+              command: result,
+              nextAction: result.status === "running"
+                ? "The command is running in the background. Do not poll for completion unless the user explicitly asked for live progress or immediate output. Do not schedule a wakeup just to check completion; this session will receive a completion message when the command exits."
+                : "The command did not remain running. Inspect the command status and retained output if needed.",
+            })
           },
         }),
         BackgroundStatus: tool({
