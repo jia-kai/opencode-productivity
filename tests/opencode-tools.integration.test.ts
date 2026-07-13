@@ -168,7 +168,7 @@ realTuiTest("OpenCode TUI prompt history search filters visible candidates as th
   assert.ok(Array.isArray(systemPrompts), "expected current OpenCode prompt history lookup to complete")
 
   const fixture = createHistoryDbFixture()
-  const prompts = searchPromptHistory("", { dbPath: fixture.dbPath, limit: 500 })
+  const prompts = searchPromptHistory("", { dbPath: fixture.dbPath, limit: 4_096 })
   assert.ok(prompts.length > 0, "expected fixture prompt history")
   assert.ok(prompts.some((prompt) => prompt.prompt.includes("tui-history-zebra")), "expected buried target fixture prompt")
   const probe = {
@@ -179,6 +179,7 @@ realTuiTest("OpenCode TUI prompt history search filters visible candidates as th
   try {
     const result = await runTuiHistorySearch({
       query: probe.query,
+      emptyQuery: "zzzz-no-history-match",
       expected: probe.expected,
       absentBeforeQuery: true,
       env: { OPENCODE_HISTORY_DB: fixture.dbPath },
@@ -427,7 +428,7 @@ function createHistoryDbFixture(): { dbPath: string; dispose: () => void } {
     db.exec("create table prompt_history (id text primary key, prompt text not null, created_at integer not null)")
     const insert = db.prepare("insert into prompt_history (id, prompt, created_at) values (?, ?, ?)")
     const now = Date.now()
-    for (let i = 0; i < 220; i++) {
+    for (let i = 0; i < 4_095; i++) {
       insert.run(`tui-history-decoy-${i}`, `recent ordinary prompt ${String(i).padStart(3, "0")} from prompt history`, now + i)
     }
     insert.run(
@@ -446,6 +447,7 @@ function createHistoryDbFixture(): { dbPath: string; dispose: () => void } {
 
 async function runTuiHistorySearch(input: {
   query: string
+  emptyQuery?: string
   expected: string
   absentBeforeQuery?: boolean
   env: Record<string, string>
@@ -456,8 +458,9 @@ async function runTuiHistorySearch(input: {
     const payload = JSON.stringify({
       cwd: process.cwd(),
       query: input.query,
+      emptyQuery: input.emptyQuery,
       expected: input.expected,
-      dialogReady: "Filter 221 prompts",
+      dialogReady: "Search 4096 prompts",
       absentBeforeQuery: input.absentBeforeQuery ?? false,
       env: {
         XDG_DATA_HOME: xdg.data,
@@ -544,10 +547,12 @@ function createPexpectHistoryScript(): { file: string; dispose: () => void } {
     "            raise AssertionError('expected candidate was visible before typing')",
     "        except pexpect.TIMEOUT:",
     "            captured.append('candidate was absent before typing')",
-    "    child.sendcontrol('u')",
-    "    for ch in cfg['query']:",
-    "        child.send(ch)",
-    "        time.sleep(0.01)",
+    "    if cfg.get('emptyQuery'):",
+    "        child.send(cfg['emptyQuery'])",
+    "        child.expect_exact('No prompt history matches', timeout=20)",
+    "        captured.append(str(child.before) + 'No prompt history matches')",
+    "        child.send('\\x7f' * len(cfg['emptyQuery']))",
+    "    child.send(cfg['query'])",
     "    child.expect_exact(cfg['expected'], timeout=20)",
     "    captured.append(str(child.before) + cfg['expected'])",
     "    ok = True",

@@ -18,6 +18,7 @@ export interface HistorySearchOptions {
 }
 
 export const MAX_PROMPT_HISTORY_ENTRIES = 4_096
+export const MAX_VISIBLE_PROMPT_HISTORY_MATCHES = 100
 
 type StatementRows = Array<Record<string, unknown>>
 
@@ -65,6 +66,25 @@ export function rankPromptHistory(
     .map((entry) => ({ ...entry, score: fuzzyScore(query, entry.prompt) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.createdAt - a.createdAt || b.score - a.score)
+    .slice(0, limit)
+}
+
+export function filterPromptHistory(
+  entries: PromptHistoryEntry[],
+  query: string,
+  limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES,
+): PromptHistoryMatch[] {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) {
+    return dedupePrompts(entries)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((entry) => ({ ...entry, score: 1 }))
+  }
+  return dedupePrompts(entries)
+    .map((entry) => ({ ...entry, score: fuzzyScore(normalizedQuery, entry.prompt) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || b.createdAt - a.createdAt)
     .slice(0, limit)
 }
 

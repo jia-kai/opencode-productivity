@@ -1,4 +1,9 @@
-import { MAX_PROMPT_HISTORY_ENTRIES, searchPromptHistory, type PromptHistoryMatch } from "./history.js"
+import {
+  filterPromptHistory,
+  MAX_PROMPT_HISTORY_ENTRIES,
+  searchPromptHistory,
+  type PromptHistoryMatch,
+} from "./history.js"
 import {
   encodeProductivityTuiCommand,
   productivityProjectID,
@@ -19,6 +24,7 @@ import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
 const PLUGIN_ID = "opencode-productivity-history"
+const EMPTY_HISTORY_OPTION_ID = "__opencode_productivity_empty_history__"
 
 export const id = PLUGIN_ID
 
@@ -270,10 +276,16 @@ function HistorySearchDialog(props: {
   allMatches: PromptHistoryMatch[]
   byID: Map<string, PromptHistoryMatch>
 }) {
+  const [filter, setFilter] = createSignal("")
+  const visibleMatches = createMemo(() => filterPromptHistory(props.allMatches, filter()))
   return props.api.ui.DialogSelect({
     title: "Prompt History",
-    placeholder: `Filter ${props.allMatches.length} prompts`,
-    options: toHistoryOptions(props.allMatches),
+    placeholder: `Search ${props.allMatches.length} prompts`,
+    get options() {
+      return toHistoryOptions(visibleMatches())
+    },
+    skipFilter: true,
+    onFilter: setFilter,
     onSelect: (option: { value: string }) => {
       const match = props.byID.get(option.value)
       if (!match) return
@@ -439,6 +451,13 @@ async function requestProductivityReset(api: any) {
 }
 
 function toHistoryOptions(matches: PromptHistoryMatch[]) {
+  if (matches.length === 0) {
+    return [{
+      title: "No prompt history matches",
+      value: EMPTY_HISTORY_OPTION_ID,
+      description: "Keep typing or press Esc",
+    }]
+  }
   return matches.map((match) => ({
     title: wrapPreview(match.prompt, 88, 4),
     value: match.id,

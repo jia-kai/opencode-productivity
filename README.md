@@ -162,7 +162,7 @@ The project includes a current OpenCode TUI plugin registered from `.opencode/tu
 
 Open the command palette and choose `Search Prompt History`, or press `ctrl+r`. The command opens an in-TUI select dialog immediately; candidates update as you type in the dialog filter.
 
-Search indexes at most the 4,096 most recent manually entered prompts. System messages, synthetic plugin notifications, and synthetic file-attachment expansions are excluded.
+Search indexes at most the 4,096 most recent manually entered prompts and gives the dialog only the best 100 current matches to keep burst typing responsive. System messages, synthetic plugin notifications, and synthetic file-attachment expansions are excluded.
 
 The project-local `.opencode/tui.json` disables OpenCode's default `session_rename` binding so `ctrl+r` opens prompt history instead of renaming the session.
 

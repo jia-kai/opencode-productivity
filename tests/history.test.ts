@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import {
   dedupePrompts,
+  filterPromptHistory,
   fuzzyScore,
   MAX_PROMPT_HISTORY_ENTRIES,
   rankPromptHistory,
@@ -40,6 +41,20 @@ test("rankPromptHistory orders by recency then score and truncates", () => {
   )
   assert.equal(result.length, 1)
   assert.equal(result[0].id, "2")
+})
+
+test("filterPromptHistory searches the full index but bounds visible matches", () => {
+  const entries = Array.from({ length: 4_096 }, (_, index) => ({
+    id: String(index),
+    prompt: index === 3_000 ? "unique burst typing target" : `ordinary prompt ${index}`,
+    createdAt: index,
+  }))
+  const initial = filterPromptHistory(entries, "")
+  const filtered = filterPromptHistory(entries, "unique target")
+
+  assert.equal(initial.length, 100)
+  assert.equal(filtered.length, 1)
+  assert.equal(filtered[0].id, "3000")
 })
 
 test("resolveHistoryDbPath honors explicit env override", () => {
