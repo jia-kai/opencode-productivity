@@ -7,7 +7,7 @@ export interface DeliveryResult {
 
 type SessionPromptInput = {
   path: { id: string }
-  body: { parts: Array<{ type: "text"; text: string }> }
+  body: { parts: Array<{ type: "text"; text: string; synthetic: true; metadata: { source: string } }> }
 }
 
 export async function postSessionNote(
@@ -23,7 +23,12 @@ export async function postSessionNote(
     const input: SessionPromptInput = {
       path: { id: sessionID },
       body: {
-        parts: [{ type: "text", text }],
+        parts: [{
+          type: "text",
+          text,
+          synthetic: true,
+          metadata: { source: "opencode-productivity" },
+        }],
       },
     }
     if (session.promptAsync) {

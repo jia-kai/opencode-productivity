@@ -1,4 +1,4 @@
-import { searchPromptHistory, type PromptHistoryMatch } from "./history.js"
+import { MAX_PROMPT_HISTORY_ENTRIES, searchPromptHistory, type PromptHistoryMatch } from "./history.js"
 import {
   encodeProductivityTuiCommand,
   productivityProjectID,
@@ -18,7 +18,6 @@ import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
-const HISTORY_INDEX_LIMIT = 5_000
 const PLUGIN_ID = "opencode-productivity-history"
 
 export const id = PLUGIN_ID
@@ -260,7 +259,7 @@ export default {
 }
 
 function openHistorySelect(api: any, initialQuery: string) {
-  const allMatches = searchPromptHistory("", { limit: HISTORY_INDEX_LIMIT })
+  const allMatches = searchPromptHistory(initialQuery, { limit: MAX_PROMPT_HISTORY_ENTRIES })
   const byID = new Map(allMatches.map((match) => [match.id, match]))
 
   api.ui.dialog.replace(() => HistorySearchDialog({ api, allMatches, byID }))

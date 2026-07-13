@@ -17,6 +17,8 @@ export interface HistorySearchOptions {
   dbPath?: string
 }
 
+export const MAX_PROMPT_HISTORY_ENTRIES = 4_096
+
 type StatementRows = Array<Record<string, unknown>>
 
 export function resolveHistoryDbPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -69,8 +71,9 @@ export function rankPromptHistory(
 export function searchPromptHistory(query: string, options: HistorySearchOptions = {}): PromptHistoryMatch[] {
   const dbPath = options.dbPath ?? resolveHistoryDbPath()
   if (!existsSync(dbPath)) return []
-  const rows = loadPromptRows(dbPath, Math.max(options.limit ?? 200, 200))
-  return rankPromptHistory(rows, query, options.limit ?? 50)
+  const resultLimit = Math.min(options.limit ?? 50, MAX_PROMPT_HISTORY_ENTRIES)
+  const rows = loadPromptRows(dbPath, Math.min(Math.max(resultLimit, 200), MAX_PROMPT_HISTORY_ENTRIES))
+  return rankPromptHistory(rows, query, resultLimit)
 }
 
 function loadPromptRows(dbPath: string, limit: number): PromptHistoryEntry[] {
@@ -130,20 +133,33 @@ function loadPromptRowsWithBunSqlite(dbPath: string, limit: number): PromptHisto
 }
 
 const candidates = [
-  `select id, group_concat(text, char(10)) as prompt, createdAt
-    from (
-      select m.id as id, json_extract(p.data, '$.text') as text, m.time_created as createdAt, p.time_created as partCreatedAt
+  `with recent_user_messages as (
+      select m.id, m.time_created as createdAt
       from message m
-      join part p on p.message_id = m.id
       where json_extract(m.data, '$.role') = 'user'
-        and json_extract(p.data, '$.type') = 'text'
+        and exists (
+          select 1
+          from part p
+          where p.message_id = m.id
+            and json_extract(p.data, '$.type') = 'text'
+            and json_extract(p.data, '$.text') is not null
+            and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
+        )
+      order by m.time_created desc
+      limit ?
+    )
+    select id, group_concat(text, char(10)) as prompt, createdAt
+    from (
+      select m.id as id, json_extract(p.data, '$.text') as text, m.createdAt, p.time_created as partCreatedAt
+      from recent_user_messages m
+      join part p on p.message_id = m.id
+      where json_extract(p.data, '$.type') = 'text'
         and json_extract(p.data, '$.text') is not null
         and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
-      order by m.time_created desc, p.time_created asc
+      order by m.createdAt desc, p.time_created asc
     )
     group by id, createdAt
-    order by createdAt desc
-    limit ?`,
+    order by createdAt desc`,
   `select id, json_extract(prompt, '$.text') as prompt, time_created as createdAt
     from session_input
     where json_extract(prompt, '$.text') is not null

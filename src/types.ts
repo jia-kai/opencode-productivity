@@ -5,11 +5,11 @@ export interface OpenCodeClient {
   session?: {
     prompt?: (input: {
       path: { id: string }
-      body: { noReply?: boolean; parts: Array<{ type: "text"; text: string }> }
+      body: { noReply?: boolean; parts: Array<{ type: "text"; text: string; synthetic?: boolean; metadata?: Record<string, unknown> }> }
     }) => Promise<unknown>
     promptAsync?: (input: {
       path: { id: string }
-      body: { noReply?: boolean; parts: Array<{ type: "text"; text: string }> }
+      body: { noReply?: boolean; parts: Array<{ type: "text"; text: string; synthetic?: boolean; metadata?: Record<string, unknown> }> }
     }) => Promise<unknown>
   }
   tui?: {

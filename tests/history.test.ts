@@ -4,7 +4,14 @@ import { DatabaseSync } from "node:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { dedupePrompts, fuzzyScore, rankPromptHistory, resolveHistoryDbPath, searchPromptHistory } from "../src/history.js"
+import {
+  dedupePrompts,
+  fuzzyScore,
+  MAX_PROMPT_HISTORY_ENTRIES,
+  rankPromptHistory,
+  resolveHistoryDbPath,
+  searchPromptHistory,
+} from "../src/history.js"
 
 test("fuzzyScore prefers exact and substring matches", () => {
   assert.ok(fuzzyScore("hello", "hello") > fuzzyScore("hello", "say hello"))
@@ -186,6 +193,55 @@ test("searchPromptHistory ignores synthetic attachment expansion parts", () => {
     assert.equal(result.length, 1)
     assert.equal(result[0].id, "msg-attachment")
     assert.equal(result[0].prompt, "Implement @task_plan.md ")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("searchPromptHistory caps results to recent manually entered user messages", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-history-"))
+  const dbPath = path.join(dir, "opencode.db")
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec(`
+      create table message (
+        id text primary key,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      create table part (
+        id text primary key,
+        message_id text not null,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      create index part_message_id on part(message_id);
+    `)
+    const insertMessage = db.prepare("insert into message values (?, 'ses', ?, ?, ?)")
+    const insertPart = db.prepare("insert into part values (?, ?, 'ses', ?, ?, ?)")
+    for (let index = 0; index < MAX_PROMPT_HISTORY_ENTRIES + 2; index += 1) {
+      const id = `manual-${index}`
+      insertMessage.run(id, index, index, JSON.stringify({ role: "user" }))
+      insertPart.run(`part-${id}`, id, index, index, JSON.stringify({ type: "text", text: `typed prompt ${index}` }))
+    }
+    insertMessage.run("system", MAX_PROMPT_HISTORY_ENTRIES + 3, MAX_PROMPT_HISTORY_ENTRIES + 3, JSON.stringify({ role: "system" }))
+    insertPart.run("part-system", "system", MAX_PROMPT_HISTORY_ENTRIES + 3, MAX_PROMPT_HISTORY_ENTRIES + 3, JSON.stringify({ type: "text", text: "system entry" }))
+    insertMessage.run("attachment", MAX_PROMPT_HISTORY_ENTRIES + 4, MAX_PROMPT_HISTORY_ENTRIES + 4, JSON.stringify({ role: "user" }))
+    insertPart.run("part-attachment-only", "attachment", MAX_PROMPT_HISTORY_ENTRIES + 4, MAX_PROMPT_HISTORY_ENTRIES + 4, JSON.stringify({ type: "text", synthetic: true, text: "file attachment contents" }))
+  } finally {
+    db.close()
+  }
+
+  try {
+    const result = searchPromptHistory("", { dbPath, limit: MAX_PROMPT_HISTORY_ENTRIES + 100 })
+    assert.equal(result.length, MAX_PROMPT_HISTORY_ENTRIES)
+    assert.equal(result[0].id, `manual-${MAX_PROMPT_HISTORY_ENTRIES + 1}`)
+    assert.equal(result.at(-1)?.id, "manual-2")
+    assert.equal(result.some((entry) => entry.id === "system" || entry.id === "attachment"), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

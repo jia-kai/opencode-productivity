@@ -16,7 +16,12 @@ test("postSessionNote sends a prompt that triggers a model reply", async () => {
   assert.deepEqual(calls, [{
     path: { id: "session-1" },
     body: {
-      parts: [{ type: "text", text: "wake up" }],
+      parts: [{
+        type: "text",
+        text: "wake up",
+        synthetic: true,
+        metadata: { source: "opencode-productivity" },
+      }],
     },
   }])
 })
@@ -41,7 +46,12 @@ test("postSessionNote prefers async prompts when available", async () => {
   assert.deepEqual(promptAsyncCalls[0], {
     path: { id: "session-1" },
     body: {
-      parts: [{ type: "text", text: "wake up" }],
+      parts: [{
+        type: "text",
+        text: "wake up",
+        synthetic: true,
+        metadata: { source: "opencode-productivity" },
+      }],
     },
   })
 })
