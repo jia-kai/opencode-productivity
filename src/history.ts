@@ -84,7 +84,7 @@ export function filterPromptHistory(
   return dedupePrompts(entries)
     .map((entry) => ({ ...entry, score: fuzzyScore(normalizedQuery, entry.prompt) }))
     .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || b.createdAt - a.createdAt)
+    .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, limit)
 }
 

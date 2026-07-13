@@ -57,6 +57,15 @@ test("filterPromptHistory searches the full index but bounds visible matches", (
   assert.equal(filtered[0].id, "3000")
 })
 
+test("filterPromptHistory sorts matching prompts newest first instead of by match score", () => {
+  const result = filterPromptHistory([
+    { id: "older-exact", prompt: "deploy", createdAt: 1 },
+    { id: "newer-substring", prompt: "please deploy the service", createdAt: 2 },
+  ], "deploy")
+
+  assert.deepEqual(result.map((entry) => entry.id), ["newer-substring", "older-exact"])
+})
+
 test("resolveHistoryDbPath honors explicit env override", () => {
   assert.equal(resolveHistoryDbPath({ OPENCODE_HISTORY_DB: "/tmp/history.db" }), "/tmp/history.db")
 })
