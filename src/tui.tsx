@@ -1,6 +1,6 @@
 import {
-  filterPromptHistory,
   MAX_PROMPT_HISTORY_ENTRIES,
+  PromptHistoryIndex,
   searchPromptHistory,
   type PromptHistoryMatch,
 } from "./history.js"
@@ -277,7 +277,8 @@ function HistorySearchDialog(props: {
   byID: Map<string, PromptHistoryMatch>
 }) {
   const [filter, setFilter] = createSignal("")
-  const visibleMatches = createMemo(() => filterPromptHistory(props.allMatches, filter()))
+  const historyIndex = new PromptHistoryIndex(props.allMatches)
+  const visibleMatches = createMemo(() => historyIndex.find(filter()))
   return props.api.ui.DialogSelect({
     title: "Prompt History",
     placeholder: `Search ${props.allMatches.length} prompts`,

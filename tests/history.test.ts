@@ -14,8 +14,8 @@ import {
   searchPromptHistory,
 } from "../src/history.js"
 
-test("fuzzyScore prefers exact and substring matches", () => {
-  assert.ok(fuzzyScore("hello", "hello") > fuzzyScore("hello", "say hello"))
+test("fuzzyScore uses fzf scoring", () => {
+  assert.ok(fuzzyScore("hello", "hello") > fuzzyScore("hello", "h e l l o"))
   assert.ok(fuzzyScore("hlo", "hello") > 0)
   assert.equal(fuzzyScore("xyz", "hello"), 0)
 })
@@ -57,7 +57,7 @@ test("filterPromptHistory searches the full index but bounds visible matches", (
   assert.equal(filtered[0].id, "3000")
 })
 
-test("filterPromptHistory sorts matching prompts newest first instead of by match score", () => {
+test("filterPromptHistory uses recency to break equal fzf scores", () => {
   const result = filterPromptHistory([
     { id: "older-exact", prompt: "deploy", createdAt: 1 },
     { id: "newer-substring", prompt: "please deploy the service", createdAt: 2 },

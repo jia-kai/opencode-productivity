@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
+import { Fzf, type FzfResultItem } from "fzf"
 
 export interface PromptHistoryEntry {
   id: string
@@ -28,23 +29,9 @@ export function resolveHistoryDbPath(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function fuzzyScore(query: string, candidate: string): number {
-  const q = query.trim().toLowerCase()
-  const c = candidate.toLowerCase()
-  if (!q) return 1
-  if (c === q) return 10_000
-  if (c.includes(q)) return 5_000 - c.indexOf(q)
-
-  let score = 0
-  let lastIndex = -1
-  let streak = 0
-  for (const char of q) {
-    const index = c.indexOf(char, lastIndex + 1)
-    if (index === -1) return 0
-    streak = index === lastIndex + 1 ? streak + 1 : 1
-    score += 20 + streak * 5 - Math.min(index - lastIndex, 20)
-    lastIndex = index
-  }
-  return Math.max(score, 1)
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) return 1
+  return new Fzf([candidate], { casing: "case-insensitive" }).find(normalizedQuery)[0]?.score ?? 0
 }
 
 export function dedupePrompts(entries: PromptHistoryEntry[]): PromptHistoryEntry[] {
@@ -62,11 +49,34 @@ export function rankPromptHistory(
   query: string,
   limit = 50,
 ): PromptHistoryMatch[] {
-  return dedupePrompts(entries)
-    .map((entry) => ({ ...entry, score: fuzzyScore(query, entry.prompt) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.createdAt - a.createdAt || b.score - a.score)
-    .slice(0, limit)
+  return new PromptHistoryIndex(entries).find(query, limit)
+}
+
+export class PromptHistoryIndex {
+  private readonly entries: PromptHistoryEntry[]
+  private readonly finder: Fzf<PromptHistoryEntry[]>
+
+  constructor(entries: PromptHistoryEntry[]) {
+    this.entries = dedupePrompts(entries).sort((a, b) => b.createdAt - a.createdAt)
+    this.finder = new Fzf(this.entries, {
+      casing: "case-insensitive",
+      selector: (entry: PromptHistoryEntry) => entry.prompt,
+      tiebreakers: [(
+        a: FzfResultItem<PromptHistoryEntry>,
+        b: FzfResultItem<PromptHistoryEntry>,
+      ) => b.item.createdAt - a.item.createdAt],
+    })
+  }
+
+  find(query: string, limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES): PromptHistoryMatch[] {
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) {
+      return this.entries.slice(0, limit).map((entry) => ({ ...entry, score: 1 }))
+    }
+    return this.finder.find(normalizedQuery)
+      .slice(0, limit)
+      .map((match: FzfResultItem<PromptHistoryEntry>) => ({ ...match.item, score: match.score }))
+  }
 }
 
 export function filterPromptHistory(
@@ -74,18 +84,7 @@ export function filterPromptHistory(
   query: string,
   limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES,
 ): PromptHistoryMatch[] {
-  const normalizedQuery = query.trim()
-  if (!normalizedQuery) {
-    return dedupePrompts(entries)
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, limit)
-      .map((entry) => ({ ...entry, score: 1 }))
-  }
-  return dedupePrompts(entries)
-    .map((entry) => ({ ...entry, score: fuzzyScore(normalizedQuery, entry.prompt) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, limit)
+  return new PromptHistoryIndex(entries).find(query, limit)
 }
 
 export function searchPromptHistory(query: string, options: HistorySearchOptions = {}): PromptHistoryMatch[] {

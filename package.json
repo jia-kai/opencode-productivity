@@ -41,6 +41,7 @@
     "@opencode-ai/plugin": "1.17.9",
     "@opentui/core": "0.3.4",
     "@opentui/solid": "0.3.4",
+    "fzf": "^0.5.2",
     "solid-js": "1.9.12"
   },
   "devDependencies": {}
