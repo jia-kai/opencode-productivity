@@ -104,11 +104,15 @@ export async function rasterizeMarkdown(
   }
 }
 
+export const PANDOC_MARKDOWN_FORMAT =
+  "markdown+lists_without_preceding_blankline-blank_before_blockquote-blank_before_header"
+  + "+tex_math_dollars+tex_math_single_backslash+autolink_bare_uris-raw_html"
+
 async function pandocHtml(markdown: string, resourcePath?: string): Promise<string> {
   const command = process.env.PANDOC_PATH?.trim() || "pandoc"
   const args = [
     "-f",
-    "markdown+lists_without_preceding_blankline-blank_before_blockquote-blank_before_header+tex_math_dollars+autolink_bare_uris-raw_html",
+    PANDOC_MARKDOWN_FORMAT,
     "-t",
     "html5",
     "--mathml",

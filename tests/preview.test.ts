@@ -11,6 +11,7 @@ import {
 } from "../src/kitty-graphics.js"
 import { previewPageLayout } from "../src/preview-layout.js"
 import { PreviewEnvironmentError, tmuxVersionSupported } from "../src/preview-environment.js"
+import { PANDOC_MARKDOWN_FORMAT } from "../src/vendor/pi-markdown-preview.js"
 
 function color(red: number, green: number, blue: number, alpha = 255) {
   return { toInts: () => [red, green, blue, alpha] as [number, number, number, number] }
@@ -109,6 +110,11 @@ test("preview payload survives maximum-quality Brotli and base64url transport", 
   const encoded = encodePreviewPayload(payload)
   assert.match(encoded, /^[A-Za-z0-9_-]+$/)
   assert.deepEqual(decodePreviewPayload(encoded), payload)
+})
+
+test("preview Pandoc input supports dollar and backslash LaTeX delimiters", () => {
+  assert.match(PANDOC_MARKDOWN_FORMAT, /\+tex_math_dollars/)
+  assert.match(PANDOC_MARKDOWN_FORMAT, /\+tex_math_single_backslash/)
 })
 
 test("Kitty graphics use a tmux-safe virtual placement and Unicode placeholder grid", () => {

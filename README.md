@@ -166,7 +166,7 @@ Search indexes at most the 4,096 most recent manually entered prompts and gives 
 
 ### Markdown and LaTeX preview
 
-The TUI command `/oc-preview` renders the latest assistant response as themed Markdown and opens it in a new tmux window, displayed through the local Kitty terminal. Inline and display LaTeX supported by Pandoc MathML render with the surrounding Markdown, including headings, lists, tables, blockquotes, code blocks, and local images. Responses are split into terminal-shaped pages at a consistent readable scale; use `j`/`k` (or the arrow keys) to change pages, `r` to redraw, and `q` or Esc to close the preview window.
+The TUI command `/oc-preview` renders the latest assistant response as themed Markdown and opens it in a new tmux window, displayed through the local Kitty terminal. Inline LaTeX can use `$...$` or `\(...\)`, and display LaTeX can use `$$...$$` or `\[...\]`; expressions supported by Pandoc MathML render with the surrounding Markdown, including headings, lists, tables, blockquotes, code blocks, and local images. Responses are split into terminal-shaped pages at a consistent readable scale; use `j`/`k` (or the arrow keys) to change pages, `r` to redraw, and `q` or Esc to close the preview window.
 
 Preview prerequisites:
 

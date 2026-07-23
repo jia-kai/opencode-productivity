@@ -11,6 +11,12 @@ $$
 x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
 $$
 
+A display equation using backslash delimiters:
+
+\[
+\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
+\]
+
 A multiline aligned derivation:
 
 $$
