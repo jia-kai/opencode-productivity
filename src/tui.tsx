@@ -18,10 +18,16 @@ import {
   type ProductivityStatusSnapshot,
 } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
+import { latestAssistantMarkdown, previewPalette } from "./preview-support.js"
+import { checkPreviewEnvironment } from "./preview-environment.js"
+import { encodePreviewPayload, MAX_PREVIEW_CLI_PAYLOAD_LENGTH } from "./preview-payload.js"
+import { previewTmuxArgs } from "./preview-tmux.js"
 import { createComponent, createElement, insert, setProp } from "@opentui/solid"
 import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
+import { spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 const PLUGIN_ID = "opencode-productivity-history"
 const EMPTY_HISTORY_OPTION_ID = "__opencode_productivity_empty_history__"
@@ -100,6 +106,19 @@ export const tui: TuiPlugin = async (api: any) => {
       },
       {
         namespace: "palette",
+        name: "productivity.preview.open",
+        title: "Preview Latest Response",
+        desc: "Render the latest assistant Markdown and LaTeX in a tmux window",
+        category: "Productivity",
+        suggested: true,
+        slashName: "oc-preview",
+        slashAliases: ["preview-response"],
+        run() {
+          void openMarkdownPreview(api)
+        },
+      },
+      {
+        namespace: "palette",
         name: "productivity.background.manage",
         title: "Manage Background Commands",
         desc: "Inspect background command state, view retained output, or cancel running commands",
@@ -136,6 +155,51 @@ export const tui: TuiPlugin = async (api: any) => {
     if (activeTuiIpc === tuiIpc) activeTuiIpc = undefined
     void tuiIpc?.close()
   })
+}
+
+async function openMarkdownPreview(api: any): Promise<void> {
+  const markdown = latestAssistantMarkdown(api)
+  if (!markdown) {
+    api.ui.toast({ variant: "warning", message: "No assistant response is available to preview." })
+    return
+  }
+  try {
+    const environment = await checkPreviewEnvironment()
+    const payload = encodePreviewPayload({
+      markdown,
+      palette: previewPalette(api),
+      resourcePath: api.state?.path?.directory,
+    })
+    if (payload.length > MAX_PREVIEW_CLI_PAYLOAD_LENGTH) {
+      throw new Error("The compressed preview is too large to pass safely as a command-line argument.")
+    }
+    const viewerPath = fileURLToPath(new URL("./preview-window.js", import.meta.url))
+    const child = spawn(environment.tmux, previewTmuxArgs(environment.node, viewerPath, payload), {
+      stdio: ["ignore", "ignore", "ignore"],
+    })
+    let spawned = false
+    child.once("error", (error) => {
+      api.ui.toast({ variant: "error", message: `Failed to open tmux preview: ${error.message}` })
+    })
+    child.once("spawn", () => {
+      spawned = true
+    })
+    child.once("close", (code: number | null) => {
+      if (!spawned || code === 0) {
+        if (code === 0) {
+          api.ui.toast({ variant: "success", message: "Opened Markdown preview in tmux." })
+        }
+        return
+      }
+      api.ui.toast({ variant: "error", message: `tmux failed to open the preview (exit ${code ?? "unknown"}).` })
+    })
+  } catch (error) {
+    api.ui.toast({
+      variant: "error",
+      message: error instanceof Error ? error.message : "Failed to render Markdown preview",
+      duration: 8_000,
+    })
+  }
 }
 
 function openBackgroundManager(api: any) {

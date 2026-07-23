@@ -17,6 +17,7 @@
   },
   "files": [
     "dist/src",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "package.json"
   ],
@@ -42,7 +43,7 @@
     "@opentui/core": "0.3.4",
     "@opentui/solid": "0.3.4",
     "fzf": "^0.5.2",
+    "puppeteer-core": "^24.43.1",
     "solid-js": "1.9.12"
-  },
-  "devDependencies": {}
+  }
 }

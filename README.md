@@ -164,6 +164,37 @@ Open the command palette and choose `Search Prompt History`, or press `ctrl+r`. 
 
 Search indexes at most the 4,096 most recent manually entered prompts and gives the dialog only the best 100 current matches to keep burst typing responsive. System messages, synthetic plugin notifications, and synthetic file-attachment expansions are excluded.
 
+### Markdown and LaTeX preview
+
+The TUI command `/oc-preview` renders the latest assistant response as themed Markdown and opens it in a new tmux window, displayed through the local Kitty terminal. Inline and display LaTeX supported by Pandoc MathML render with the surrounding Markdown, including headings, lists, tables, blockquotes, code blocks, and local images. Responses are split into terminal-shaped pages at a consistent readable scale; use `j`/`k` (or the arrow keys) to change pages, `r` to redraw, and `q` or Esc to close the preview window.
+
+Preview prerequisites:
+
+- `pandoc` on `PATH`, or `PANDOC_PATH` pointing to the executable
+- a Chromium-based browser at a standard system path, or `PUPPETEER_EXECUTABLE_PATH`
+- OpenCode running inside tmux 3.3 or newer, with `set -g allow-passthrough on`
+- Kitty as the local terminal at the end of the SSH connection
+- `tmux` on the remote `PATH`, or `OPENCODE_PREVIEW_TMUX` pointing to the tmux executable
+- Node.js on `PATH`, or `OPENCODE_PREVIEW_NODE` pointing to the Node.js executable
+
+Before launching, `/oc-preview` runs one centralized environment preflight for tmux membership, tmux 3.3+, pane passthrough, unsupported nested tmux, Node.js, Pandoc, and Chromium. The result—including a failure—is cached for the lifetime of that process, so later preview calls perform no repeated probes. The standalone viewer runs the same cached preflight in its own process and leaves any actionable failure message visible in its tmux window.
+
+Kitty does not need to be installed on the remote machine. The plugin serializes the Markdown, resolved OpenCode palette, and resource directory; compresses the payload with maximum-quality Brotli; and passes its base64url representation as the viewer's command-line argument. The viewer owns Markdown conversion, Chromium rasterization, paging, keyboard input, and Kitty output. It loads all rendered pages into memory and removes its temporary render directory before presenting the first page.
+
+PNG data is sent inline through tmux and the existing terminal connection; this implementation assumes a single tmux layer. The viewer uses Kitty Unicode-placeholder placements, allowing tmux to hide, restore, clip, and redraw the image with its owning pane. Chromium's sandbox remains enabled. CLI payloads are capped at 96 KiB to stay below common per-argument operating-system limits. Command-line arguments may be visible to other processes owned by the same user, so `/oc-preview` should not be used for responses containing secrets on an untrusted shared account. The rasterization core is adapted from `pi-markdown-preview`; see `THIRD_PARTY_NOTICES.md`.
+
+To test the viewer directly from a tmux pane with the included sample:
+
+```sh
+./scripts/test-preview.sh
+```
+
+Pass another Markdown file as the first argument to test custom content:
+
+```sh
+./scripts/test-preview.sh path/to/document.md
+```
+
 The project-local `.opencode/tui.json` disables OpenCode's default `session_rename` binding so `ctrl+r` opens prompt history instead of renaming the session.
 
 The command also registers the TUI slash alias:

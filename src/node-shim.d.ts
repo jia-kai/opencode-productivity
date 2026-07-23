@@ -162,9 +162,11 @@ declare function clearInterval(timeout: NodeJS.Timeout): void
 
 declare class Buffer extends Uint8Array {
   static from(input: string | Uint8Array): Buffer
+  static from(input: string, encoding: string): Buffer
   static isBuffer(input: unknown): input is Buffer
   static concat(list: Buffer[], totalLength?: number): Buffer
   subarray(start?: number, end?: number): Buffer
-  toString(encoding?: string): string
+  toString(encoding?: string, start?: number, end?: number): string
+  readUInt32BE(offset: number): number
   readonly length: number
 }

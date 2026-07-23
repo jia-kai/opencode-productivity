@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { spawn } from "node:child_process"
 import { DEFAULTS } from "./config.js"
 import { postSessionNote, type DeliveryResult } from "./delivery.js"
 import { OutputBuffer, type OutputBufferSnapshot, type OutputLineRange } from "./output-buffer.js"
@@ -63,12 +63,19 @@ export interface OutputRetention {
 }
 
 interface InternalCommand extends Omit<BackgroundCommandRecord, "stdout" | "stderr" | "runtimeMs" | "runtimeSeconds" | "processStatus" | "outputRetention" | "outputRanges"> {
-  proc?: ChildProcessWithoutNullStreams
+  proc?: BackgroundProcess
   maxOutputBytes: number
   stdoutBuffer: OutputBuffer
   stderrBuffer: OutputBuffer
   timeout?: NodeJS.Timeout
   killedByUser?: boolean
+}
+
+interface BackgroundProcess {
+  pid?: number
+  killed: boolean
+  exitCode: number | null
+  kill(signal?: string): boolean
 }
 
 export class BackgroundManager {
@@ -525,7 +532,7 @@ function normalizeName(value: string | undefined): string {
   return name
 }
 
-function killProcess(proc: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+function killProcess(proc: BackgroundProcess, signal: NodeJS.Signals): void {
   try {
     if (process.platform !== "win32" && proc.pid) {
       process.kill(-proc.pid, signal)
