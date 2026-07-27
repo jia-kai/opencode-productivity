@@ -13,10 +13,12 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import puppeteer from "puppeteer-core"
 import { findPreviewBrowser } from "../preview-environment.js"
+import { previewPageSlices } from "../preview-pagination.js"
 
 const VIEWPORT_WIDTH = 1200
 const PAGE_HEIGHT = 900
 const MAX_HEIGHT = 60_000
+const PAGE_OVERLAP = 96
 
 export interface PreviewPalette {
   mode: "dark" | "light"
@@ -72,15 +74,33 @@ export async function rasterizeMarkdown(
     })
     if (options.signal?.aborted) throw new Error("Preview rendering cancelled")
 
-    const contentHeight = await page.evaluate(() => {
+    const measurements = await page.evaluate(() => {
       const root = document.getElementById("preview-root")
-      return root ? Math.ceil(root.getBoundingClientRect().height + 48) : 900
+      if (!root) return { contentHeight: 900, breakCandidates: [] }
+      const children = Array.from(root.children)
+      const breakCandidates: Array<{ position: number; nextPageTop?: number }> = []
+      const lineHeight = Number.parseFloat(getComputedStyle(root).lineHeight) || 24
+      for (let index = 1; index < children.length; index++) {
+        const previousElement = children[index - 1]
+        const previous = previousElement.getBoundingClientRect()
+        const current = children[index].getBoundingClientRect()
+        if (current.top - previous.bottom >= lineHeight * 0.35) {
+          const position = Math.round((previous.bottom + current.top) / 2)
+          const containsVisualBlock = previousElement.matches("pre,table,figure")
+            || previousElement.querySelector("img,svg,table,pre,math[display='block']") !== null
+          breakCandidates.push({ position, ...(containsVisualBlock ? { nextPageTop: position } : {}) })
+        }
+      }
+      return {
+        contentHeight: Math.ceil(root.getBoundingClientRect().height + 48),
+        breakCandidates,
+      }
     })
-    const height = Math.max(500, Math.min(MAX_HEIGHT, contentHeight))
+    const height = Math.max(500, Math.min(MAX_HEIGHT, measurements.contentHeight))
     await page.setViewport({ width: VIEWPORT_WIDTH, height, deviceScaleFactor: 2 })
-    const count = Math.max(1, Math.ceil(height / PAGE_HEIGHT))
+    const slices = previewPageSlices(height, measurements.breakCandidates, PAGE_HEIGHT, PAGE_OVERLAP)
     const pages: string[] = []
-    for (let index = 0; index < count; index++) {
+    for (const [index, slice] of slices.entries()) {
       if (options.signal?.aborted) throw new Error("Preview rendering cancelled")
       const output = path.join(directory, `page-${index + 1}.png`)
       await page.screenshot({
@@ -88,14 +108,14 @@ export async function rasterizeMarkdown(
         type: "png",
         clip: {
           x: 0,
-          y: index * PAGE_HEIGHT,
+          y: slice.top,
           width: VIEWPORT_WIDTH,
-          height: Math.min(PAGE_HEIGHT, height - index * PAGE_HEIGHT),
+          height: slice.height,
         },
       })
       pages.push(output)
     }
-    return { directory, pages, truncated: contentHeight > MAX_HEIGHT }
+    return { directory, pages, truncated: measurements.contentHeight > MAX_HEIGHT }
   } catch (error) {
     await rm(directory, { recursive: true, force: true })
     throw error

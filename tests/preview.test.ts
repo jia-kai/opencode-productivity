@@ -10,6 +10,7 @@ import {
   transmitKittyPng,
 } from "../src/kitty-graphics.js"
 import { previewPageLayout } from "../src/preview-layout.js"
+import { previewPageSlices } from "../src/preview-pagination.js"
 import { PreviewEnvironmentError, tmuxVersionSupported } from "../src/preview-environment.js"
 import { PANDOC_MARKDOWN_FORMAT } from "../src/vendor/pi-markdown-preview.js"
 
@@ -136,6 +137,38 @@ test("preview pages keep the same horizontal scale when the last page is shorter
   assert.equal(shortPage.columns, 96)
   assert.equal(fullPage.rows, 36)
   assert.equal(shortPage.rows, 12)
+})
+
+test("preview pages prefer nearby block gaps and repeat context across boundaries", () => {
+  assert.deepEqual(
+    previewPageSlices(2_100, [760, 940, 1_600], 900, 90),
+    [
+      { top: 0, height: 760 },
+      { top: 670, height: 930 },
+      { top: 1_510, height: 590 },
+    ],
+  )
+})
+
+test("preview pagination falls back to fixed slices when a block has no gaps", () => {
+  assert.deepEqual(
+    previewPageSlices(1_850, [], 900, 90),
+    [
+      { top: 0, height: 900 },
+      { top: 810, height: 900 },
+      { top: 1_620, height: 230 },
+    ],
+  )
+})
+
+test("preview pagination does not repeat a visual block into the next page", () => {
+  assert.deepEqual(
+    previewPageSlices(1_500, [{ position: 820, nextPageTop: 820 }], 900, 90),
+    [
+      { top: 0, height: 820 },
+      { top: 820, height: 680 },
+    ],
+  )
 })
 
 test("preview environment diagnostics parse supported tmux versions and centralize messages", () => {
