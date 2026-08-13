@@ -177,7 +177,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
     }
 
     function discoverTuiConnections() {
-      for (const socketPath of discoverProductivityTuiSockets(ctx.directory, ctx.serverUrl.toString())) {
+      for (const socketPath of discoverProductivityTuiSockets(ctx.directory)) {
         const existing = tuiConnections.get(socketPath)
         if (!existing || existing.isClosed()) connectToTui(socketPath)
       }

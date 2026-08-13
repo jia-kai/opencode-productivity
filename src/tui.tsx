@@ -6,7 +6,6 @@ import {
 } from "./history.js"
 import {
   startProductivityTuiIpcServer,
-  tuiClientServerUrl,
   type ProductivityActionResponse,
   type ProductivityPeerSnapshot,
   type ProductivityTuiIpcServer,
@@ -44,7 +43,7 @@ export const tui: TuiPlugin = async (api: any) => {
     api.renderer?.requestRender?.()
   }
   try {
-    tuiIpc = await startProductivityTuiIpcServer(directory, tuiClientServerUrl(api.client), refreshPeers)
+    tuiIpc = await startProductivityTuiIpcServer(directory, refreshPeers)
     activeTuiIpc = tuiIpc
   } catch (error) {
     api.ui?.toast?.({ variant: "error", message: error instanceof Error ? error.message : "Failed to start productivity TUI IPC" })

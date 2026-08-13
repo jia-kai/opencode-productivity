@@ -64,10 +64,10 @@ type ProductivityIpcMessage =
 const DEFAULT_TIMEOUT_MS = 4_000
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 
-export async function startProductivityTuiIpcServer(directory: string, serverUrl: string, onUpdate?: () => void): Promise<ProductivityTuiIpcServer> {
+export async function startProductivityTuiIpcServer(directory: string, onUpdate?: () => void): Promise<ProductivityTuiIpcServer> {
   assertUnixSocketSupport()
   cleanupStaleProductivitySockets()
-  const socketPath = productivityTuiSocketPath(directory, serverUrl, process.pid, Date.now().toString(36))
+  const socketPath = productivityTuiSocketPath(directory, process.pid, Date.now().toString(36))
   mkdirSync(path.dirname(socketPath), { recursive: true })
   unlinkStaleSocket(socketPath)
 
@@ -230,46 +230,30 @@ export function connectProductivityServerToTui(socketPath: string, snapshot: Pro
   }
 }
 
-export function productivityTuiSocketPath(directory: string, serverUrl: string, pid = process.pid, nonce = "tui"): string {
-  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-${hashProjectPath(normalizeServerUrl(serverUrl))}-tui-${pid}-${nonce}.sock`)
+export function productivityTuiSocketPath(directory: string, opencodePid = process.pid, nonce = "tui"): string {
+  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-server-${opencodePid}-tui-${nonce}.sock`)
 }
 
-export function discoverProductivityTuiSockets(directory: string, serverUrl: string): string[] {
+export function discoverProductivityTuiSockets(directory: string, opencodePid = process.pid): string[] {
   try {
     return readdirSync(productivityRuntimeRoot(), { withFileTypes: true })
-      .filter((entry) => entry.isSocket() && isProductivityTuiSocketName(directory, serverUrl, entry.name))
+      .filter((entry) => entry.isSocket() && isProductivityTuiSocketName(directory, opencodePid, entry.name))
       .map((entry) => path.join(productivityRuntimeRoot(), entry.name))
   } catch {
     return []
   }
 }
 
-export function isProductivityTuiSocketName(directory: string, serverUrl: string, name: string): boolean {
-  const prefix = `${hashProjectPath(directory)}-${hashProjectPath(normalizeServerUrl(serverUrl))}-tui-`
+export function isProductivityTuiSocketName(directory: string, opencodePid: number, name: string): boolean {
+  const prefix = `${hashProjectPath(directory)}-server-${opencodePid}-tui-`
   return name.startsWith(prefix) && name.endsWith(".sock")
-}
-
-export function tuiClientServerUrl(client: unknown): string {
-  const transport = (client as { client?: { getConfig?: () => { baseUrl?: unknown } } } | undefined)?.client
-  const baseUrl = transport?.getConfig?.().baseUrl
-  if (typeof baseUrl !== "string" || baseUrl.length === 0) {
-    throw new Error("OpenCode TUI client does not expose its server base URL")
-  }
-  return normalizeServerUrl(baseUrl)
-}
-
-export function normalizeServerUrl(serverUrl: string | URL): string {
-  const url = new URL(serverUrl)
-  url.hash = ""
-  url.search = ""
-  return url.toString().replace(/\/$/, "")
 }
 
 export function cleanupStaleProductivitySockets(): void {
   try {
     for (const entry of readdirSync(productivityRuntimeRoot(), { withFileTypes: true })) {
       if (!entry.isSocket() && !entry.isFile()) continue
-      const match = /^.+-tui-(\d+)-.+\.sock$/.exec(entry.name)
+      const match = /^.+-server-(\d+)-tui-.+\.sock$/.exec(entry.name)
       if (!match) continue
       const pid = Number(match[1])
       const socketPath = path.join(productivityRuntimeRoot(), entry.name)

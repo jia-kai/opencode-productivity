@@ -7,10 +7,8 @@ import { BackgroundManager, type BackgroundStatusValue } from "../src/background
 import {
   connectProductivityServerToTui,
   isProductivityTuiSocketName,
-  normalizeServerUrl,
   productivityTuiSocketPath,
   startProductivityTuiIpcServer,
-  tuiClientServerUrl,
 } from "../src/ipc.js"
 import { handleActionRequest } from "../src/plugin.js"
 import { WakeupScheduler } from "../src/scheduler.js"
@@ -90,26 +88,18 @@ test("compiled TUI does not import the OpenTUI JSX runtime", () => {
 
 test("productivity TUI IPC socket path stays short for deep project paths", () => {
   const deepDirectory = path.join(tmpdir(), ...Array.from({ length: 40 }, (_, index) => `deep-${index}`))
-  const socketPath = productivityTuiSocketPath(deepDirectory, "http://127.0.0.1:4096", 12345, "nonce")
+  const socketPath = productivityTuiSocketPath(deepDirectory, 12345, "nonce")
   assert.equal(socketPath.startsWith(path.join(tmpdir(), "opencode-productivity")), true)
   assert.ok(socketPath.length < 104, socketPath)
 })
 
 test("server instances identify discoverable TUI sockets without command events", () => {
   const directory = path.join(tmpdir(), `opencode-productivity-discovery-${process.pid}-${Date.now()}`)
-  const serverUrl = "http://127.0.0.1:4096/"
-  const socketPath = productivityTuiSocketPath(directory, serverUrl, process.pid, `discovery-${Date.now()}`)
-  assert.equal(isProductivityTuiSocketName(directory, serverUrl, path.basename(socketPath)), true)
-  assert.equal(isProductivityTuiSocketName(directory, "http://127.0.0.1:4097", path.basename(socketPath)), false)
-  assert.equal(isProductivityTuiSocketName(`${directory}-other`, serverUrl, path.basename(socketPath)), false)
-  assert.equal(isProductivityTuiSocketName(directory, serverUrl, `${path.basename(socketPath)}.stale`), false)
-})
-
-test("TUI and server normalize the private SDK server URL to the same identity", () => {
-  const client = { client: { getConfig: () => ({ baseUrl: "http://127.0.0.1:4096/" }) } }
-  assert.equal(tuiClientServerUrl(client), "http://127.0.0.1:4096")
-  assert.equal(normalizeServerUrl(new URL("http://127.0.0.1:4096/")), tuiClientServerUrl(client))
-  assert.throws(() => tuiClientServerUrl({}), /does not expose its server base URL/)
+  const socketPath = productivityTuiSocketPath(directory, process.pid, `discovery-${Date.now()}`)
+  assert.equal(isProductivityTuiSocketName(directory, process.pid, path.basename(socketPath)), true)
+  assert.equal(isProductivityTuiSocketName(directory, process.pid + 1, path.basename(socketPath)), false)
+  assert.equal(isProductivityTuiSocketName(`${directory}-other`, process.pid, path.basename(socketPath)), false)
+  assert.equal(isProductivityTuiSocketName(directory, process.pid, `${path.basename(socketPath)}.stale`), false)
 })
 
 test("TUI-owned IPC routes actions to the selected same-directory instance", async () => {
@@ -118,7 +108,7 @@ test("TUI-owned IPC routes actions to the selected same-directory instance", asy
   const handled: string[] = []
   try {
     try {
-      tui = await startProductivityTuiIpcServer(dir, "http://127.0.0.1:4096")
+      tui = await startProductivityTuiIpcServer(dir)
     } catch (error) {
       if (isSocketPermissionError(error)) return
       throw error
@@ -170,7 +160,7 @@ test("TUI-owned IPC /new reset is scoped to the selected same-directory instance
   const backgroundB = new BackgroundManager(undefined, dir)
   try {
     try {
-      tui = await startProductivityTuiIpcServer(dir, "http://127.0.0.1:4096")
+      tui = await startProductivityTuiIpcServer(dir)
     } catch (error) {
       if (isSocketPermissionError(error)) return
       throw error
