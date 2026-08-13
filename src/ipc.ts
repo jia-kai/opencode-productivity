@@ -61,15 +61,13 @@ type ProductivityIpcMessage =
   | { type: "request"; request: ProductivityActionRequest }
   | { type: "response"; response: ProductivityActionResponse }
 
-export const PRODUCTIVITY_TUI_COMMAND_PREFIX = "opencode-productivity.ipc:"
-
 const DEFAULT_TIMEOUT_MS = 4_000
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 
-export async function startProductivityTuiIpcServer(directory: string, onUpdate?: () => void): Promise<ProductivityTuiIpcServer> {
+export async function startProductivityTuiIpcServer(directory: string, serverUrl: string, onUpdate?: () => void): Promise<ProductivityTuiIpcServer> {
   assertUnixSocketSupport()
   cleanupStaleProductivitySockets()
-  const socketPath = productivityTuiSocketPath(directory, process.pid, Date.now().toString(36))
+  const socketPath = productivityTuiSocketPath(directory, serverUrl, process.pid, Date.now().toString(36))
   mkdirSync(path.dirname(socketPath), { recursive: true })
   unlinkStaleSocket(socketPath)
 
@@ -232,32 +230,39 @@ export function connectProductivityServerToTui(socketPath: string, snapshot: Pro
   }
 }
 
-export function productivityTuiSocketPath(directory: string, pid = process.pid, nonce = "tui"): string {
-  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-tui-${pid}-${nonce}.sock`)
+export function productivityTuiSocketPath(directory: string, serverUrl: string, pid = process.pid, nonce = "tui"): string {
+  return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-${hashProjectPath(normalizeServerUrl(serverUrl))}-tui-${pid}-${nonce}.sock`)
 }
 
-export function productivityProjectID(directory: string): string {
-  return hashProjectPath(directory)
-}
-
-export function encodeProductivityTuiCommand(payload: { op: "connect"; projectID: string; socketPath: string; sessionID?: string }): string {
-  return `${PRODUCTIVITY_TUI_COMMAND_PREFIX}${encodeURIComponent(JSON.stringify(payload))}`
-}
-
-export function decodeProductivityTuiCommand(command: unknown): { op: "connect"; projectID: string; socketPath: string; sessionID?: string } | undefined {
-  if (typeof command !== "string" || !command.startsWith(PRODUCTIVITY_TUI_COMMAND_PREFIX)) return undefined
+export function discoverProductivityTuiSockets(directory: string, serverUrl: string): string[] {
   try {
-    const parsed = JSON.parse(decodeURIComponent(command.slice(PRODUCTIVITY_TUI_COMMAND_PREFIX.length))) as Partial<{ op: string; projectID: string; socketPath: string; sessionID: string }>
-    if (parsed.op !== "connect" || typeof parsed.projectID !== "string" || typeof parsed.socketPath !== "string") return undefined
-    return {
-      op: "connect",
-      projectID: parsed.projectID,
-      socketPath: parsed.socketPath,
-      sessionID: typeof parsed.sessionID === "string" ? parsed.sessionID : undefined,
-    }
+    return readdirSync(productivityRuntimeRoot(), { withFileTypes: true })
+      .filter((entry) => entry.isSocket() && isProductivityTuiSocketName(directory, serverUrl, entry.name))
+      .map((entry) => path.join(productivityRuntimeRoot(), entry.name))
   } catch {
-    return undefined
+    return []
   }
+}
+
+export function isProductivityTuiSocketName(directory: string, serverUrl: string, name: string): boolean {
+  const prefix = `${hashProjectPath(directory)}-${hashProjectPath(normalizeServerUrl(serverUrl))}-tui-`
+  return name.startsWith(prefix) && name.endsWith(".sock")
+}
+
+export function tuiClientServerUrl(client: unknown): string {
+  const transport = (client as { client?: { getConfig?: () => { baseUrl?: unknown } } } | undefined)?.client
+  const baseUrl = transport?.getConfig?.().baseUrl
+  if (typeof baseUrl !== "string" || baseUrl.length === 0) {
+    throw new Error("OpenCode TUI client does not expose its server base URL")
+  }
+  return normalizeServerUrl(baseUrl)
+}
+
+export function normalizeServerUrl(serverUrl: string | URL): string {
+  const url = new URL(serverUrl)
+  url.hash = ""
+  url.search = ""
+  return url.toString().replace(/\/$/, "")
 }
 
 export function cleanupStaleProductivitySockets(): void {

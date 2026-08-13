@@ -30,4 +30,5 @@ export interface PluginContext {
   client?: OpenCodeClient
   directory: string
   worktree: string
+  serverUrl: URL
 }

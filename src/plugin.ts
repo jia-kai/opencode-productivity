@@ -2,13 +2,11 @@ import { BackgroundManager, type BackgroundCommandRecord } from "./background.js
 import { WakeupScheduler } from "./scheduler.js"
 import {
   connectProductivityServerToTui,
-  decodeProductivityTuiCommand,
-  productivityProjectID,
+  discoverProductivityTuiSockets,
   type ProductivityActionRequest,
   type ProductivityActionResponse,
   type ProductivityServerIpcClient,
 } from "./ipc.js"
-import { handleTuiCommand } from "./tui-command.js"
 import { localTimeContext } from "./time.js"
 import type { PluginContext, ToolContext } from "./types.js"
 
@@ -42,6 +40,7 @@ export function createProductivityPlugin(tool: ToolFactory) {
       commands: background.list().map(backgroundStatusView),
     })
     const publish = () => {
+      discoverTuiConnections()
       const current = snapshot()
       for (const connection of tuiConnections.values()) connection.sendSnapshot(current)
     }
@@ -154,27 +153,6 @@ export function createProductivityPlugin(tool: ToolFactory) {
           },
         }),
       },
-      event: async ({ event }: { event: { type?: string } & Record<string, unknown> }) => {
-        if (event.type === "tui.command.execute") {
-          const command = extractCommand(event)
-          const request = decodeProductivityTuiCommand(command)
-          if (request && request.projectID === productivityProjectID(ctx.directory)) {
-            connectToTui(request.socketPath)
-            return
-          }
-        }
-        if (event.type === "tui.command.execute" || event.type === "command.executed") {
-          if (await handleTuiCommand(event, { client: ctx.client, scheduler, background })) publish()
-        }
-      },
-      "tui.command.execute": async (input: unknown) => {
-        const request = decodeProductivityTuiCommand(extractCommand(input))
-        if (request && request.projectID === productivityProjectID(ctx.directory)) {
-          connectToTui(request.socketPath)
-          return
-        }
-        if (await handleTuiCommand(input, { client: ctx.client, scheduler, background })) publish()
-      },
       dispose: async () => {
         clearInterval(publishInterval)
         for (const connection of tuiConnections.values()) connection.close()
@@ -197,17 +175,18 @@ export function createProductivityPlugin(tool: ToolFactory) {
       tuiConnections.set(socketPath, connection)
       publish()
     }
+
+    function discoverTuiConnections() {
+      for (const socketPath of discoverProductivityTuiSockets(ctx.directory, ctx.serverUrl.toString())) {
+        const existing = tuiConnections.get(socketPath)
+        if (!existing || existing.isClosed()) connectToTui(socketPath)
+      }
+    }
   }
 }
 
 function knownSessions(wakeups: Array<{ sessionID?: string }>, commands: Array<{ sessionID?: string }>): string[] {
   return [...new Set([...wakeups, ...commands].map((item) => item.sessionID).filter((value): value is string => typeof value === "string" && value.length > 0))]
-}
-
-function extractCommand(input: unknown): unknown {
-  if (typeof input !== "object" || input === null) return undefined
-  const item = input as { command?: unknown; properties?: { command?: unknown } }
-  return item.command ?? item.properties?.command
 }
 
 export async function handleActionRequest(request: ProductivityActionRequest, state: {

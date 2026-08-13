@@ -5,9 +5,8 @@ import {
   type PromptHistoryMatch,
 } from "./history.js"
 import {
-  encodeProductivityTuiCommand,
-  productivityProjectID,
   startProductivityTuiIpcServer,
+  tuiClientServerUrl,
   type ProductivityActionResponse,
   type ProductivityPeerSnapshot,
   type ProductivityTuiIpcServer,
@@ -45,34 +44,11 @@ export const tui: TuiPlugin = async (api: any) => {
     api.renderer?.requestRender?.()
   }
   try {
-    tuiIpc = await startProductivityTuiIpcServer(directory, refreshPeers)
+    tuiIpc = await startProductivityTuiIpcServer(directory, tuiClientServerUrl(api.client), refreshPeers)
     activeTuiIpc = tuiIpc
   } catch (error) {
     api.ui?.toast?.({ variant: "error", message: error instanceof Error ? error.message : "Failed to start productivity TUI IPC" })
   }
-
-  const announce = () => {
-    if (!tuiIpc) return
-    const sessionID = currentSessionID(api)
-    void api.client?.tui?.publish?.({
-      directory: api.state?.path?.directory,
-      workspace: api.workspace?.current?.(),
-      body: {
-        type: "tui.command.execute",
-        properties: {
-          command: encodeProductivityTuiCommand({
-            op: "connect",
-            projectID: productivityProjectID(directory),
-            socketPath: tuiIpc.socketPath,
-            sessionID,
-          }),
-        },
-      },
-    }).catch(() => undefined)
-  }
-  announce()
-  const announceInterval = setInterval(announce, 1_000)
-  ;(announceInterval as { unref?: () => void }).unref?.()
 
   const unregister = api.keymap.registerLayer({
     priority: 100,
@@ -151,7 +127,6 @@ export const tui: TuiPlugin = async (api: any) => {
   if (typeof unregister === "function") api.lifecycle.onDispose(unregister)
   api.lifecycle.onDispose(unregisterSlots)
   api.lifecycle.onDispose(() => {
-    clearInterval(announceInterval)
     if (activeTuiIpc === tuiIpc) activeTuiIpc = undefined
     void tuiIpc?.close()
   })
