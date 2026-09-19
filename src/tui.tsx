@@ -1,7 +1,7 @@
 import {
-  MAX_PROMPT_HISTORY_ENTRIES,
   PromptHistoryIndex,
-  searchPromptHistory,
+  refreshPromptHistorySnapshot,
+  type PreparedPromptHistoryEntry,
   type PromptHistoryMatch,
 } from "./history.js"
 import {
@@ -62,7 +62,7 @@ export const tui: TuiPlugin = async (api: any) => {
         slashName: "oc-history",
         slashAliases: ["history-search", "prompt-history"],
         run() {
-          openHistorySelect(api, "")
+          openHistorySelect(api)
         },
       },
       {
@@ -129,6 +129,7 @@ export const tui: TuiPlugin = async (api: any) => {
     if (activeTuiIpc === tuiIpc) activeTuiIpc = undefined
     void tuiIpc?.close()
   })
+  ensurePromptHistoryLoaded()
 }
 
 async function openMarkdownPreview(api: any): Promise<void> {
@@ -302,31 +303,75 @@ export default {
   tui,
 }
 
-function openHistorySelect(api: any, initialQuery: string) {
-  const allMatches = searchPromptHistory(initialQuery, { limit: MAX_PROMPT_HISTORY_ENTRIES })
-  const byID = new Map(allMatches.map((match) => [match.id, match]))
+interface HistoryDialogState {
+  status: "loading" | "ready"
+  items: PreparedPromptHistoryEntry[]
+  index: PromptHistoryIndex | undefined
+}
 
-  api.ui.dialog.replace(() => HistorySearchDialog({ api, allMatches, byID }))
+let historyDialogState: HistoryDialogState = { status: "loading", items: [], index: undefined }
+let historyRefreshInFlight: Promise<void> | undefined
+
+function ensurePromptHistoryLoaded(onUpdate?: () => void): void {
+  const pending = refreshPromptHistorySnapshot()
+  if (historyRefreshInFlight) {
+    if (onUpdate) void historyRefreshInFlight.then(onUpdate, onUpdate)
+    return
+  }
+  historyRefreshInFlight = pending
+    .then((snapshot) => {
+      historyDialogState = { status: "ready", items: snapshot.items, index: snapshot.index }
+      onUpdate?.()
+    })
+    .catch(() => {
+      historyDialogState = { status: "ready", items: [], index: PromptHistoryIndex.fromPrepared([]) }
+      onUpdate?.()
+    })
+    .finally(() => {
+      historyRefreshInFlight = undefined
+    })
+}
+
+function openHistorySelect(api: any) {
+  const [version, setVersion] = createSignal(0)
+  ensurePromptHistoryLoaded(() => setVersion((value) => value + 1))
+  api.ui.dialog.replace(() => HistorySearchDialog({ api, version }))
 }
 
 function HistorySearchDialog(props: {
   api: any
-  allMatches: PromptHistoryMatch[]
-  byID: Map<string, PromptHistoryMatch>
+  version: () => number
 }) {
   const [filter, setFilter] = createSignal("")
-  const historyIndex = new PromptHistoryIndex(props.allMatches)
-  const visibleMatches = createMemo(() => historyIndex.find(filter()))
+  const snapshot = () => (props.version(), historyDialogState)
+  const visibleMatches = createMemo(() => {
+    const index = snapshot().index
+    return index ? index.find(filter()) : []
+  })
+  const byID = createMemo(() => {
+    const matches = new Map<string, PreparedPromptHistoryEntry>()
+    for (const item of snapshot().items) matches.set(item.id, item)
+    return matches
+  })
   return props.api.ui.DialogSelect({
     title: "Prompt History",
-    placeholder: `Search ${props.allMatches.length} prompts`,
+    placeholder: snapshot().index ? `Search ${snapshot().items.length} prompts` : "Loading prompt history",
     get options() {
+      const state = snapshot()
+      if (!state.index) {
+        return [{
+          title: "Loading prompt history…",
+          value: EMPTY_HISTORY_OPTION_ID,
+          description: "One moment",
+        }]
+      }
       return toHistoryOptions(visibleMatches())
     },
     skipFilter: true,
     onFilter: setFilter,
     onSelect: (option: { value: string }) => {
-      const match = props.byID.get(option.value)
+      if (option.value === EMPTY_HISTORY_OPTION_ID) return
+      const match = byID().get(option.value)
       if (!match) return
       insertPrompt(props.api, match.prompt)
       props.api.ui.dialog.clear()

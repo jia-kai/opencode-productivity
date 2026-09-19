@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { DatabaseSync } from "node:sqlite"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -9,8 +9,12 @@ import {
   filterPromptHistory,
   fuzzyScore,
   MAX_PROMPT_HISTORY_ENTRIES,
+  preparePromptHistoryEntries,
+  PromptHistoryIndex,
   rankPromptHistory,
+  refreshPromptHistorySnapshot,
   resolveHistoryDbPath,
+  scorePromptHistoryMatch,
   searchPromptHistory,
 } from "../src/history.js"
 
@@ -64,6 +68,81 @@ test("filterPromptHistory uses recency to break equal fzf scores", () => {
   ], "deploy")
 
   assert.deepEqual(result.map((entry) => entry.id), ["newer-substring", "older-exact"])
+})
+
+test("scorePromptHistoryMatch ranks substrings above scattered subsequences", () => {
+  const text = "please deploy the service"
+  const substring = scorePromptHistoryMatch("deploy", text)
+  const subsequence = scorePromptHistoryMatch("dploy", text)
+  const miss = scorePromptHistoryMatch("zzqq", text)
+
+  assert.equal(substring, 1_000_000)
+  assert.ok(subsequence > 0)
+  assert.ok(subsequence < substring)
+  assert.equal(miss, 0)
+})
+
+test("PromptHistoryIndex.fromPrepared reuses precomputed entries without reshuffling", () => {
+  const prepared = preparePromptHistoryEntries([
+    { id: "old", prompt: "Deploy API", createdAt: 1 },
+    { id: "new", prompt: "deploy api", createdAt: 2 },
+  ])
+
+  assert.deepEqual(prepared.map((entry) => entry.id), ["new", "old"])
+  assert.equal(prepared[0].searchText, "deploy api")
+
+  const index = PromptHistoryIndex.fromPrepared(prepared)
+  assert.equal(index.size, 2)
+  assert.deepEqual(index.find("deploy").map((match) => match.id), ["new", "old"])
+  assert.equal(index.find("")[0].id, "new")
+})
+
+test("refreshPromptHistorySnapshot caches by dbPath and mtime", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-history-snapshot-"))
+  const dbPath = path.join(dir, "opencode.db")
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec(`
+      create table message (
+        id text primary key,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      create table part (
+        id text primary key,
+        message_id text not null,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+    `)
+    db.prepare("insert into message values (?, 'ses', 1, 1, ?)").run("msg-1", JSON.stringify({ role: "user" }))
+    db.prepare("insert into part values (?, 'msg-1', 'ses', 2, 2, ?)").run(
+      "part-1",
+      JSON.stringify({ type: "text", text: "snapshot cache prompt" }),
+    )
+  } finally {
+    db.close()
+  }
+
+  try {
+    const first = await refreshPromptHistorySnapshot(dbPath)
+    assert.equal(first.items.length, 1)
+    assert.equal(first.items[0].prompt, "snapshot cache prompt")
+    const second = await refreshPromptHistorySnapshot(dbPath)
+    assert.equal(second, first)
+
+    const later = Date.now() / 1_000 + 10
+    utimesSync(dbPath, later, later)
+    const third = await refreshPromptHistorySnapshot(dbPath)
+    assert.notEqual(third, first)
+    assert.equal(third.items.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test("resolveHistoryDbPath honors explicit env override", () => {

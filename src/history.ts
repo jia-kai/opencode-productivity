@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
+import { Worker } from "node:worker_threads"
 import { Fzf, type FzfResultItem } from "fzf"
 
 export interface PromptHistoryEntry {
@@ -52,31 +53,84 @@ export function rankPromptHistory(
   return new PromptHistoryIndex(entries).find(query, limit)
 }
 
+export const PROMPT_HISTORY_SCORING_WINDOW = 4_096
+
+const SUBSTRING_SCORE = 1_000_000
+const SUBSEQUENCE_SCORE_BASE = 500_000
+
+export interface PreparedPromptHistoryEntry extends PromptHistoryEntry {
+  searchText: string
+}
+
+export function preparePromptHistoryEntries(entries: PromptHistoryEntry[]): PreparedPromptHistoryEntry[] {
+  return dedupePrompts(entries)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((entry) => ({
+      ...entry,
+      searchText: entry.prompt.slice(0, PROMPT_HISTORY_SCORING_WINDOW).toLowerCase(),
+    }))
+}
+
+export function scorePromptHistoryMatch(query: string, searchText: string): number {
+  if (searchText.includes(query)) return SUBSTRING_SCORE
+  let from = 0
+  let first = -1
+  let last = -1
+  for (let index = 0; index < query.length; index += 1) {
+    const at = searchText.indexOf(query[index], from)
+    if (at < 0) return 0
+    if (first < 0) first = at
+    last = at
+    from = at + 1
+  }
+  const tightness = query.length / (last - first + 1)
+  const earliness = 1 - first / searchText.length
+  return SUBSEQUENCE_SCORE_BASE * (0.7 * tightness + 0.3 * earliness)
+}
+
 export class PromptHistoryIndex {
-  private readonly entries: PromptHistoryEntry[]
-  private readonly finder: Fzf<PromptHistoryEntry[]>
+  private items: PreparedPromptHistoryEntry[]
 
   constructor(entries: PromptHistoryEntry[]) {
-    this.entries = dedupePrompts(entries).sort((a, b) => b.createdAt - a.createdAt)
-    this.finder = new Fzf(this.entries, {
-      casing: "case-insensitive",
-      selector: (entry: PromptHistoryEntry) => entry.prompt,
-      tiebreakers: [(
-        a: FzfResultItem<PromptHistoryEntry>,
-        b: FzfResultItem<PromptHistoryEntry>,
-      ) => b.item.createdAt - a.item.createdAt],
-    })
+    this.items = preparePromptHistoryEntries(entries)
+  }
+
+  static fromPrepared(items: PreparedPromptHistoryEntry[]): PromptHistoryIndex {
+    const index = Object.create(PromptHistoryIndex.prototype) as PromptHistoryIndex
+    ;(index as unknown as { items: PreparedPromptHistoryEntry[] }).items = items
+    return index
+  }
+
+  get size(): number {
+    return this.items.length
+  }
+
+  get all(): readonly PreparedPromptHistoryEntry[] {
+    return this.items
   }
 
   find(query: string, limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES): PromptHistoryMatch[] {
-    const normalizedQuery = query.trim()
+    const normalizedQuery = query.trim().toLowerCase()
     if (!normalizedQuery) {
-      return this.entries.slice(0, limit).map((entry) => ({ ...entry, score: 1 }))
+      return this.items.slice(0, limit).map(toMatchWithScore(1))
     }
-    return this.finder.find(normalizedQuery)
-      .slice(0, limit)
-      .map((match: FzfResultItem<PromptHistoryEntry>) => ({ ...match.item, score: match.score }))
+    const matches: PromptHistoryMatch[] = []
+    for (const item of this.items) {
+      const score = scorePromptHistoryMatch(normalizedQuery, item.searchText)
+      if (score > 0) matches.push(toMatchWithScore(score)(item))
+    }
+    matches.sort((a, b) => b.score - a.score || b.createdAt - a.createdAt)
+    return matches.slice(0, limit)
   }
+}
+
+function toMatchWithScore(score: number) {
+  return (item: PreparedPromptHistoryEntry): PromptHistoryMatch => ({
+    id: item.id,
+    prompt: item.prompt,
+    createdAt: item.createdAt,
+    score,
+  })
 }
 
 export function filterPromptHistory(
@@ -93,6 +147,62 @@ export function searchPromptHistory(query: string, options: HistorySearchOptions
   const resultLimit = Math.min(options.limit ?? 50, MAX_PROMPT_HISTORY_ENTRIES)
   const rows = loadPromptRows(dbPath, Math.min(Math.max(resultLimit, 200), MAX_PROMPT_HISTORY_ENTRIES))
   return rankPromptHistory(rows, query, resultLimit)
+}
+
+export function loadPromptHistoryEntries(dbPath: string, limit: number): PromptHistoryEntry[] {
+  return loadPromptRows(dbPath, limit)
+}
+
+export interface PromptHistorySnapshot {
+  dbPath: string
+  mtimeMs: number
+  items: PreparedPromptHistoryEntry[]
+  index: PromptHistoryIndex
+}
+
+let cachedPromptHistory: PromptHistorySnapshot | undefined
+let promptHistoryRefresh: Promise<PromptHistorySnapshot> | undefined
+
+export function getCachedPromptHistorySnapshot(): PromptHistorySnapshot | undefined {
+  return cachedPromptHistory
+}
+
+export function refreshPromptHistorySnapshot(dbPath = resolveHistoryDbPath()): Promise<PromptHistorySnapshot> {
+  if (!promptHistoryRefresh) {
+    promptHistoryRefresh = (async () => {
+      const mtimeMs = existsSync(dbPath) ? statSync(dbPath).mtimeMs : -1
+      if (cachedPromptHistory?.dbPath === dbPath && cachedPromptHistory.mtimeMs === mtimeMs) {
+        return cachedPromptHistory
+      }
+      const entries = await loadPromptHistoryEntriesAsync(dbPath, MAX_PROMPT_HISTORY_ENTRIES).catch(
+        () => loadPromptHistoryEntries(dbPath, MAX_PROMPT_HISTORY_ENTRIES),
+      )
+      const items = preparePromptHistoryEntries(entries)
+      cachedPromptHistory = { dbPath, mtimeMs, items, index: PromptHistoryIndex.fromPrepared(items) }
+      return cachedPromptHistory
+    })()
+    void promptHistoryRefresh.finally(() => {
+      promptHistoryRefresh = undefined
+    })
+  }
+  return promptHistoryRefresh
+}
+
+async function loadPromptHistoryEntriesAsync(dbPath: string, limit: number): Promise<PromptHistoryEntry[]> {
+  const worker = new Worker(new URL("./history-worker.js", import.meta.url), {
+    workerData: { dbPath, limit },
+  })
+  try {
+    return await new Promise<PromptHistoryEntry[]>((resolve, reject) => {
+      worker.once("message", resolve)
+      worker.once("error", reject)
+      worker.once("exit", (code) => {
+        if (code !== 0) reject(new Error(`history worker exited with code ${code}`))
+      })
+    })
+  } finally {
+    void worker.terminate()
+  }
 }
 
 function loadPromptRows(dbPath: string, limit: number): PromptHistoryEntry[] {
