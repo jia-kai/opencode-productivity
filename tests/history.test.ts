@@ -1,13 +1,14 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { DatabaseSync } from "node:sqlite"
-import { mkdtempSync, rmSync, utimesSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
   dedupePrompts,
   filterPromptHistory,
   fuzzyScore,
+  loadPromptHistoryEntries,
   MAX_PROMPT_HISTORY_ENTRIES,
   preparePromptHistoryEntries,
   PromptHistoryIndex,
@@ -97,7 +98,7 @@ test("PromptHistoryIndex.fromPrepared reuses precomputed entries without reshuff
   assert.equal(index.find("")[0].id, "new")
 })
 
-test("refreshPromptHistorySnapshot caches by dbPath and mtime", async () => {
+test("refreshPromptHistorySnapshot incrementally picks up newer prompts", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "opencode-history-snapshot-"))
   const dbPath = path.join(dir, "opencode.db")
   const db = new DatabaseSync(dbPath)
@@ -135,12 +136,74 @@ test("refreshPromptHistorySnapshot caches by dbPath and mtime", async () => {
     const second = await refreshPromptHistorySnapshot(dbPath)
     assert.equal(second, first)
 
-    const later = Date.now() / 1_000 + 10
-    utimesSync(dbPath, later, later)
+    const write = new DatabaseSync(dbPath)
+    try {
+      write
+        .prepare("insert into message values (?, 'ses', 3, 3, ?)")
+        .run("msg-2", JSON.stringify({ role: "user" }))
+      write
+        .prepare("insert into part values (?, 'msg-2', 'ses', 4, 4, ?)")
+        .run("part-2", JSON.stringify({ type: "text", text: "brand new follow up prompt" }))
+    } finally {
+      write.close()
+    }
     const third = await refreshPromptHistorySnapshot(dbPath)
     assert.notEqual(third, first)
-    assert.equal(third.items.length, 1)
+    assert.equal(third.items.length, 2)
+    assert.equal(third.items[0].prompt, "brand new follow up prompt")
+    const fourth = await refreshPromptHistorySnapshot(dbPath)
+    assert.equal(fourth, third)
   } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("searchPromptHistory excludes machine-generated subagent session prompts", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-history-subagent-"))
+  const dbPath = path.join(dir, "opencode.db")
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec(`
+      create table session (id text primary key, parent_id text);
+      create table message (
+        id text primary key,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      create table part (
+        id text primary key,
+        message_id text not null,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      insert into session values ('ses-main', null);
+      insert into session values ('ses-sub', 'ses-main');
+    `)
+    const insertMessage = db.prepare("insert into message values (?, ?, ?, ?, ?)")
+    const insertPart = db.prepare("insert into part values (?, ?, ?, ?, ?, ?)")
+    insertMessage.run("msg-main", "ses-main", 10, 10, JSON.stringify({ role: "user" }))
+    insertPart.run("part-main", "msg-main", "ses-main", 11, 11, JSON.stringify({ type: "text", text: "manually typed main prompt" }))
+    insertMessage.run("msg-sub", "ses-sub", 20, 20, JSON.stringify({ role: "user" }))
+    insertPart.run("part-sub", "msg-sub", "ses-sub", 21, 21, JSON.stringify({ type: "text", text: "subagent task description noise" }))
+
+    const matches = searchPromptHistory("subagent task description", { dbPath, limit: 10 })
+    assert.equal(matches.length, 0)
+    const main = searchPromptHistory("manually typed main", { dbPath, limit: 10 })
+    assert.equal(main.length, 1)
+    assert.equal(main[0].prompt, "manually typed main prompt")
+    assert.equal(main[0].id, "msg-main")
+
+    const sinceNewest = loadPromptHistoryEntries(dbPath, 10, 20)
+    assert.equal(sinceNewest.length, 0)
+    const sinceOlder = loadPromptHistoryEntries(dbPath, 10, 15)
+    assert.equal(sinceOlder.length, 1)
+    assert.equal(sinceOlder[0].id, "msg-sub")
+  } finally {
+    db.close()
     rmSync(dir, { recursive: true, force: true })
   }
 })

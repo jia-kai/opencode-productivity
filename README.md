@@ -160,7 +160,7 @@ That test first reads prompt history from the current OpenCode system to verify 
 
 The TUI plugin registers a `Search Prompt History` palette command with slash aliases through OpenCode v2's keymap layer.
 
-Open the command palette and choose `Search Prompt History`, press `ctrl+r` (the plugin binds it, overriding the default `session_rename` shortcut), or run `/oc-history`. Type a search query and press Enter; a select dialog then lists the best matches ranked by the custom scorer. Selecting a prompt copies it to the clipboard (OSC52), since OpenCode v2 does not expose a composer-insertion API.
+Open the command palette and choose `Search Prompt History`, press `ctrl+r` (the plugin binds it, overriding the default `session_rename` shortcut), or run `/oc-history`. The dialog re-ranks matches on every keystroke with the custom scorer; `↑`/`↓` move the selection, `enter` copies the selected prompt to the clipboard (OSC52, since OpenCode v2 does not expose a composer-insertion API), and `esc` closes. If the custom overlay is unavailable, it falls back to a two-step prompt/select flow using the host dialogs.
 
 Search indexes at most the 4,096 most recent manually entered prompts and gives the dialog only the best 100 current matches to keep burst typing responsive. System messages, synthetic plugin notifications, and synthetic file-attachment expansions are excluded.
 

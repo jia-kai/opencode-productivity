@@ -149,8 +149,8 @@ export function searchPromptHistory(query: string, options: HistorySearchOptions
   return rankPromptHistory(rows, query, resultLimit)
 }
 
-export function loadPromptHistoryEntries(dbPath: string, limit: number): PromptHistoryEntry[] {
-  return loadPromptRows(dbPath, limit)
+export function loadPromptHistoryEntries(dbPath: string, limit: number, since = 0): PromptHistoryEntry[] {
+  return loadPromptRows(dbPath, limit, since)
 }
 
 export interface PromptHistorySnapshot {
@@ -170,15 +170,27 @@ export function getCachedPromptHistorySnapshot(): PromptHistorySnapshot | undefi
 export function refreshPromptHistorySnapshot(dbPath = resolveHistoryDbPath()): Promise<PromptHistorySnapshot> {
   if (!promptHistoryRefresh) {
     promptHistoryRefresh = (async () => {
-      const mtimeMs = existsSync(dbPath) ? statSync(dbPath).mtimeMs : -1
-      if (cachedPromptHistory?.dbPath === dbPath && cachedPromptHistory.mtimeMs === mtimeMs) {
-        return cachedPromptHistory
+      const cached = cachedPromptHistory?.dbPath === dbPath ? cachedPromptHistory : undefined
+      if (cached) {
+        // Incremental refresh: fetch only rows newer than the newest cached
+        // entry. The query reverse-scans a time index, so this stays in the
+        // tens of milliseconds even on multi-gigabyte history databases.
+        const since = cached.items[0]?.createdAt ?? 0
+        if (since > 0) {
+          const fresh = await loadPromptHistoryEntriesAsync(dbPath, MAX_PROMPT_HISTORY_ENTRIES, since).catch(() =>
+            loadPromptHistoryEntries(dbPath, MAX_PROMPT_HISTORY_ENTRIES, since),
+          )
+          if (fresh.length === 0) return cached
+          const items = preparePromptHistoryEntries([...fresh, ...cached.items]).slice(0, MAX_PROMPT_HISTORY_ENTRIES)
+          cachedPromptHistory = { dbPath, mtimeMs: statMtimeMs(dbPath), items, index: PromptHistoryIndex.fromPrepared(items) }
+          return cachedPromptHistory
+        }
       }
-      const entries = await loadPromptHistoryEntriesAsync(dbPath, MAX_PROMPT_HISTORY_ENTRIES).catch(
-        () => loadPromptHistoryEntries(dbPath, MAX_PROMPT_HISTORY_ENTRIES),
+      const entries = await loadPromptHistoryEntriesAsync(dbPath, MAX_PROMPT_HISTORY_ENTRIES).catch(() =>
+        loadPromptHistoryEntries(dbPath, MAX_PROMPT_HISTORY_ENTRIES),
       )
-      const items = preparePromptHistoryEntries(entries)
-      cachedPromptHistory = { dbPath, mtimeMs, items, index: PromptHistoryIndex.fromPrepared(items) }
+      const items = preparePromptHistoryEntries(entries).slice(0, MAX_PROMPT_HISTORY_ENTRIES)
+      cachedPromptHistory = { dbPath, mtimeMs: statMtimeMs(dbPath), items, index: PromptHistoryIndex.fromPrepared(items) }
       return cachedPromptHistory
     })()
     void promptHistoryRefresh.finally(() => {
@@ -188,9 +200,13 @@ export function refreshPromptHistorySnapshot(dbPath = resolveHistoryDbPath()): P
   return promptHistoryRefresh
 }
 
-async function loadPromptHistoryEntriesAsync(dbPath: string, limit: number): Promise<PromptHistoryEntry[]> {
+function statMtimeMs(dbPath: string): number {
+  return existsSync(dbPath) ? statSync(dbPath).mtimeMs : -1
+}
+
+async function loadPromptHistoryEntriesAsync(dbPath: string, limit: number, since = 0): Promise<PromptHistoryEntry[]> {
   const worker = new Worker(new URL("./history-worker.js", import.meta.url), {
-    workerData: { dbPath, limit },
+    workerData: { dbPath, limit, since },
   })
   try {
     return await new Promise<PromptHistoryEntry[]>((resolve, reject) => {
@@ -205,18 +221,18 @@ async function loadPromptHistoryEntriesAsync(dbPath: string, limit: number): Pro
   }
 }
 
-function loadPromptRows(dbPath: string, limit: number): PromptHistoryEntry[] {
-  return loadPromptRowsWithNodeSqlite(dbPath, limit) ?? loadPromptRowsWithBunSqlite(dbPath, limit) ?? []
+function loadPromptRows(dbPath: string, limit: number, since = 0): PromptHistoryEntry[] {
+  return loadPromptRowsWithNodeSqlite(dbPath, limit, since) ?? loadPromptRowsWithBunSqlite(dbPath, limit, since) ?? []
 }
 
-function loadPromptRowsWithNodeSqlite(dbPath: string, limit: number): PromptHistoryEntry[] | undefined {
+function loadPromptRowsWithNodeSqlite(dbPath: string, limit: number, since: number): PromptHistoryEntry[] | undefined {
   let db: import("node:sqlite").DatabaseSync | undefined
   try {
     const sqlite = requireNodeSqlite()
     db = new sqlite.DatabaseSync(dbPath, { readOnly: true })
-    for (const sql of candidates) {
+    for (const candidate of candidates) {
       try {
-        const rows = db.prepare(sql).all(limit) as StatementRows
+        const rows = db.prepare(candidate.sql).all(...candidate.params(limit, since)) as StatementRows
         const parsed = rows.map(normalizeRow).filter((entry): entry is PromptHistoryEntry => Boolean(entry?.prompt))
         if (parsed.length > 0) return parsed
       } catch {
@@ -238,15 +254,15 @@ interface BunSqliteModule {
   }
 }
 
-function loadPromptRowsWithBunSqlite(dbPath: string, limit: number): PromptHistoryEntry[] | undefined {
+function loadPromptRowsWithBunSqlite(dbPath: string, limit: number, since: number): PromptHistoryEntry[] | undefined {
   let db: InstanceType<BunSqliteModule["Database"]> | undefined
   try {
     const sqlite = requireBunSqlite()
     if (!sqlite) return undefined
     db = new sqlite.Database(dbPath, { readonly: true })
-    for (const sql of candidates) {
+    for (const candidate of candidates) {
       try {
-        const rows = db.query(sql).all(limit)
+        const rows = db.query(candidate.sql).all(...candidate.params(limit, since))
         const parsed = rows.map(normalizeRow).filter((entry): entry is PromptHistoryEntry => Boolean(entry?.prompt))
         if (parsed.length > 0) return parsed
       } catch {
@@ -261,11 +277,18 @@ function loadPromptRowsWithBunSqlite(dbPath: string, limit: number): PromptHisto
   return undefined
 }
 
-const candidates = [
-  `with recent_user_messages as (
+interface HistoryQueryCandidate {
+  sql: string
+  params: (limit: number, since: number) => unknown[]
+}
+
+function recentUserMessagesSql(withSessionJoin: boolean): string {
+  return `with recent_user_messages as (
       select m.id, m.time_created as createdAt
       from message m
-      where json_extract(m.data, '$.role') = 'user'
+      ${withSessionJoin ? "left join session s on s.id = m.session_id" : ""}
+      where ${withSessionJoin ? "s.parent_id is null and " : ""}m.time_created > ?1
+        and json_extract(m.data, '$.role') = 'user'
         and exists (
           select 1
           from part p
@@ -275,7 +298,7 @@ const candidates = [
             and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
         )
       order by m.time_created desc
-      limit ?
+      limit ?2
     )
     select id, group_concat(text, char(10)) as prompt, createdAt
     from (
@@ -288,16 +311,47 @@ const candidates = [
       order by m.createdAt desc, p.time_created asc
     )
     group by id, createdAt
-    order by createdAt desc`,
-  `select id, json_extract(prompt, '$.text') as prompt, time_created as createdAt
+    order by createdAt desc`
+}
+
+const candidates: HistoryQueryCandidate[] = [
+  {
+    // Current OpenCode v2 schema. Excluding sessions that have a parent also
+    // excludes machine-generated prompts the host writes into subagent
+    // sessions; main sessions have no parent_id.
+    sql: recentUserMessagesSql(true),
+    params: (limit, since) => [since, limit],
+  },
+  {
+    // Same query without the session join for databases without a session
+    // table.
+    sql: recentUserMessagesSql(false),
+    params: (limit, since) => [since, limit],
+  },
+  {
+    sql: `select id, json_extract(prompt, '$.text') as prompt, time_created as createdAt
     from session_input
     where json_extract(prompt, '$.text') is not null
     order by time_created desc
     limit ?`,
-  `select id, prompt, time_created as createdAt from session_input order by time_created desc limit ?`,
-  `select id, text as prompt, time_created as createdAt from message where role = 'user' order by time_created desc limit ?`,
-  `select id, prompt, created_at as createdAt from prompt_history order by created_at desc limit ?`,
-  `select id, content as prompt, created_at as createdAt from messages where role = 'user' order by created_at desc limit ?`,
+    params: (limit) => [limit],
+  },
+  {
+    sql: `select id, prompt, time_created as createdAt from session_input order by time_created desc limit ?`,
+    params: (limit) => [limit],
+  },
+  {
+    sql: `select id, text as prompt, time_created as createdAt from message where role = 'user' order by time_created desc limit ?`,
+    params: (limit) => [limit],
+  },
+  {
+    sql: `select id, prompt, created_at as createdAt from prompt_history order by created_at desc limit ?`,
+    params: (limit) => [limit],
+  },
+  {
+    sql: `select id, content as prompt, created_at as createdAt from messages where role = 'user' order by created_at desc limit ?`,
+    params: (limit) => [limit],
+  },
 ]
 
 function normalizeRow(row: Record<string, unknown>): PromptHistoryEntry | undefined {

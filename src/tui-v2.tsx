@@ -11,15 +11,19 @@ import {
   ensurePromptHistoryLoaded,
   formatWakeup,
   toHistoryOptions,
+  wrapPreview,
+  type HistoryDialogState,
 } from "./tui-shared.js"
+import type { PromptHistoryMatch } from "./history.js"
 import { type BackgroundStatusSnapshot, type ProductivityStatusSnapshot } from "./status.js"
 import type { WakeupRecord } from "./scheduler.js"
 import { checkPreviewEnvironment } from "./preview-environment.js"
 import { encodePreviewPayload, MAX_PREVIEW_CLI_PAYLOAD_LENGTH } from "./preview-payload.js"
 import { previewTmuxArgs } from "./preview-tmux.js"
 import type { PreviewPalette } from "./vendor/pi-markdown-preview.js"
-import { createComponent } from "@opentui/solid"
-import { createSignal } from "solid-js"
+import { createComponent, createElement, insert, setProp } from "@opentui/solid"
+import { TextAttributes, type KeyEvent } from "@opentui/core"
+import { createMemo, createSignal } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
@@ -149,8 +153,192 @@ export const setup: Plugin.Definition["setup"] = async (context) => {
   }
 }
 
+interface HistoryKeyInput {
+  on: (event: "keypress", handler: (event: KeyEvent) => void) => unknown
+  off: (event: "keypress", handler: (event: KeyEvent) => void) => unknown
+}
+
+const HISTORY_VISIBLE_ROWS = 12
+
 async function openHistorySelect(context: TuiContext) {
   await ensurePromptHistoryLoaded()
+  const dialog = context.ui.dialog as typeof context.ui.dialog & { show?: unknown; set?: unknown }
+  const showAvailable = typeof dialog.show === "function"
+  const setAvailable = typeof dialog.set === "function"
+  if (showAvailable && setAvailable) {
+    try {
+      await openLiveHistorySearch(context)
+      return
+    } catch (error) {
+      context.ui.toast.show({
+        variant: "error",
+        message: `Live history search unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+  } else {
+    context.ui.toast.show({
+      variant: "error",
+      message: `Live history search unavailable: dialog.show=${showAvailable} dialog.set=${setAvailable}`,
+    })
+  }
+  await openHistorySelectFallback(context)
+}
+
+/**
+ * Live-search dialog: re-runs the custom scorer on every keystroke (the same
+ * incremental UX as the v1 DialogSelect filter), driven by raw key events from
+ * the host renderer's keyInput so it does not depend on plugin-side solid
+ * context providers.
+ */
+async function openLiveHistorySearch(context: TuiContext) {
+  const state = currentHistoryDialogState()
+  if (!state.index) return
+  const keyInput = context.renderer ? (context.renderer.keyInput as unknown as HistoryKeyInput | undefined) : undefined
+  context.ui.dialog.set({ size: "large" })
+  let settled = false
+  let handleKeypress: ((event: KeyEvent) => void) | undefined
+  let attached = false
+  let resolveClosed: () => void = () => {}
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve
+  })
+  function close() {
+    if (settled) return
+    settled = true
+    if (handleKeypress) keyInput?.off("keypress", handleKeypress)
+    try {
+      context.ui.dialog.clear()
+    } catch {}
+    resolveClosed()
+  }
+  try {
+    // The overlay must be constructed inside the render callback: element
+    // factories resolve the host renderer from the render context.
+    context.ui.dialog.show((): any => {
+      const overlay = HistorySearchOverlay({
+        getState: currentHistoryDialogState,
+        onAccept: (match) => {
+          close()
+          void insertPrompt(context, match.prompt)
+        },
+        onClose: close,
+      })
+      if (!attached) {
+        attached = true
+        handleKeypress = overlay.handleKeypress
+        keyInput?.on("keypress", overlay.handleKeypress)
+      }
+      return overlay.element
+    }, close)
+  } catch (error) {
+    close()
+    throw error
+  }
+  await closed
+}
+
+function HistorySearchOverlay(props: {
+  getState: () => HistoryDialogState
+  onAccept: (match: PromptHistoryMatch) => void
+  onClose: () => void
+}) {
+  const [query, setQuery] = createSignal("")
+  const [cursor, setCursor] = createSignal(0)
+
+  const matches = createMemo(() => {
+    const index = props.getState().index
+    return index ? index.find(query()) : []
+  })
+  const clampedCursor = () => Math.min(cursor(), Math.max(0, matches().length - 1))
+  const windowStart = () =>
+    Math.max(0, Math.min(clampedCursor() - Math.floor(HISTORY_VISIBLE_ROWS / 2), matches().length - HISTORY_VISIBLE_ROWS))
+
+  const handleKeypress = (event: KeyEvent) => {
+    const name = event.name ?? ""
+    if (name === "escape" || (event.ctrl && name === "c")) {
+      props.onClose()
+      return
+    }
+    if (name === "return" || name === "enter") {
+      const match = matches()[clampedCursor()]
+      if (match) props.onAccept(match)
+      return
+    }
+    if (name === "up") {
+      setCursor(Math.max(0, clampedCursor() - 1))
+      return
+    }
+    if (name === "down") {
+      setCursor(Math.min(matches().length - 1, clampedCursor() + 1))
+      return
+    }
+    if (name === "backspace") {
+      setQuery((value) => value.slice(0, -1))
+      setCursor(0)
+      return
+    }
+    if (event.ctrl || event.meta || event.super) return
+    const sequence = event.sequence ?? ""
+    if (sequence.length === 1 && sequence.charCodeAt(0) >= 32) {
+      setQuery((value) => `${value}${sequence}`.slice(0, 200))
+      setCursor(0)
+    }
+  }
+
+  const box = createElement("box")
+  setProp(box, "flexDirection", "column")
+  setProp(box, "gap", 1)
+
+  const title = createElement("text")
+  setProp(title, "attributes", TextAttributes.BOLD)
+  insert(title, () => {
+    const state = props.getState()
+    const trimmed = query().trim()
+    return trimmed
+      ? `Prompt History — prompts matching “${trimmed}”`
+      : `Prompt History — search ${state.items.length} prompts. Leave empty to list the most recent.`
+  })
+
+  const searchLine = createElement("text")
+  setProp(searchLine, "attributes", TextAttributes.BOLD)
+  insert(searchLine, () => `❯ ${query()}▌`)
+
+  const listBox = createElement("box")
+  setProp(listBox, "flexDirection", "column")
+  insert(listBox, () => {
+    const all = matches()
+    if (all.length === 0) {
+      const empty = createElement("text")
+      setProp(empty, "fg", "yellow")
+      insert(empty, "No prompt history matches. Keep typing or press Esc.")
+      return [empty]
+    }
+    const start = windowStart()
+    return all.slice(start, start + HISTORY_VISIBLE_ROWS).map((match, offset) => {
+      const selected = start + offset === clampedCursor()
+      const row = createElement("box")
+      setProp(row, "flexDirection", "column")
+      const line = createElement("text")
+      setProp(line, "wrapMode", "word")
+      if (selected) setProp(line, "attributes", TextAttributes.BOLD)
+      insert(line, `${selected ? "▸ " : "  "}${wrapPreview(match.prompt, 96, 1)}`)
+      const date = createElement("text")
+      setProp(date, "fg", "gray")
+      insert(date, `  ${new Date(match.createdAt).toLocaleString()}`)
+      insert(row, [line, date])
+      return row
+    })
+  })
+
+  const hint = createElement("text")
+  setProp(hint, "fg", "gray")
+  insert(hint, "Type to search · ↑/↓ move · enter copy prompt · esc close")
+
+  insert(box, [title, searchLine, listBox, hint])
+  return { element: box, handleKeypress }
+}
+
+async function openHistorySelectFallback(context: TuiContext) {
   const state = currentHistoryDialogState()
   if (!state.index) return
   const query = await context.ui.dialog.prompt({
