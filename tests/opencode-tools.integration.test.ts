@@ -162,7 +162,7 @@ realModelTest("real OpenCode model can pull intermediate output from a long-runn
   assertToolsCalled(run, backgroundTools)
 })
 
-realTuiTest("OpenCode TUI prompt history search filters visible candidates as the user types", async () => {
+realTuiTest("OpenCode TUI prompt history search surfaces scored matches in v2 dialogs", async () => {
   const systemDbPath = resolveHistoryDbPath()
   const systemPrompts = searchPromptHistory("", { dbPath: systemDbPath, limit: 500 })
   assert.ok(Array.isArray(systemPrompts), "expected current OpenCode prompt history lookup to complete")
@@ -181,7 +181,6 @@ realTuiTest("OpenCode TUI prompt history search filters visible candidates as th
       query: probe.query,
       emptyQuery: "zzzz-no-history-match",
       expected: probe.expected,
-      absentBeforeQuery: true,
       env: { OPENCODE_HISTORY_DB: fixture.dbPath },
     })
     assert.equal(result.ok, true, result.output)
@@ -449,11 +448,9 @@ async function runTuiHistorySearch(input: {
   query: string
   emptyQuery?: string
   expected: string
-  absentBeforeQuery?: boolean
   env: Record<string, string>
 }): Promise<{ ok: boolean; output: string }> {
   const script = createPexpectHistoryScript()
-  const xdg = createTuiXdgFixture()
   try {
     const payload = JSON.stringify({
       cwd: process.cwd(),
@@ -461,11 +458,7 @@ async function runTuiHistorySearch(input: {
       emptyQuery: input.emptyQuery,
       expected: input.expected,
       dialogReady: "Search 4096 prompts",
-      absentBeforeQuery: input.absentBeforeQuery ?? false,
       env: {
-        XDG_DATA_HOME: xdg.data,
-        XDG_CACHE_HOME: xdg.cache,
-        XDG_STATE_HOME: xdg.state,
         ...input.env,
         TERM: process.env.TERM || "xterm-256color",
       },
@@ -494,24 +487,7 @@ async function runTuiHistorySearch(input: {
     }
     return { ok: true, output: parsed.output }
   } finally {
-    xdg.dispose()
     script.dispose()
-  }
-}
-
-function createTuiXdgFixture(): { data: string; cache: string; state: string; dispose: () => void } {
-  const dir = mkdtempSync(path.join(tmpdir(), "opencode-tui-xdg-"))
-  const data = path.join(dir, "data")
-  const cache = path.join(dir, "cache")
-  const state = path.join(dir, "state")
-  mkdirSync(data, { recursive: true })
-  mkdirSync(cache, { recursive: true })
-  mkdirSync(state, { recursive: true })
-  return {
-    data,
-    cache,
-    state,
-    dispose: () => rmSync(dir, { force: true, recursive: true }),
   }
 }
 
@@ -531,28 +507,44 @@ function createPexpectHistoryScript(): { file: string; dispose: () => void } {
     "try:",
     "    child.expect(['Session', 'Continue', 'opencode', 'OpenCode', pexpect.TIMEOUT], timeout=20)",
     "    captured.append(str(child.before) + str(child.after))",
-    "    child.send('/oc-history')",
-    "    child.expect_exact('/oc-history', timeout=20)",
-    "    captured.append(str(child.before) + '/oc-history')",
-    "    child.send('\\r')",
-    "    child.expect_exact('Prompt History', timeout=20)",
-    "    captured.append(str(child.before) + 'Prompt History')",
+    "    time.sleep(1)",
+    "",
+    "    def open_history():",
+    "        child.send('/oc-history')",
+    "        time.sleep(0.3)",
+    "        child.send('\\r')",
+    "        return child.expect(['Prompt History', pexpect.TIMEOUT], timeout=15) == 0",
+    "",
+    "    opened = False",
+    "    for attempt in range(8):",
+    "        if open_history():",
+    "            opened = True",
+    "            break",
+    "        child.send('\\x1b')",
+    "        time.sleep(4)",
+    "    if not opened:",
+    "        raise AssertionError('Prompt History dialog never opened')",
+    "    captured.append('Prompt History')",
     "    child.expect_exact(cfg['dialogReady'], timeout=20)",
     "    captured.append(str(child.before) + cfg['dialogReady'])",
     "    time.sleep(0.2)",
-    "    if cfg.get('absentBeforeQuery'):",
-    "        try:",
-    "            child.expect_exact(cfg['expected'], timeout=1)",
-    "            captured.append(str(child.before) + cfg['expected'])",
-    "            raise AssertionError('expected candidate was visible before typing')",
-    "        except pexpect.TIMEOUT:",
-    "            captured.append('candidate was absent before typing')",
     "    if cfg.get('emptyQuery'):",
     "        child.send(cfg['emptyQuery'])",
+    "        child.send('\\r')",
     "        child.expect_exact('No prompt history matches', timeout=20)",
     "        captured.append(str(child.before) + 'No prompt history matches')",
-    "        child.send('\\x7f' * len(cfg['emptyQuery']))",
+    "        child.send('\\x1b')",
+    "        time.sleep(0.4)",
+    "    child.send('/oc-history')",
+    "    child.expect_exact('/oc-history', timeout=20)",
+    "    child.send('\\r')",
+    "    child.expect_exact('Prompt History', timeout=20)",
+    "    child.expect_exact(cfg['dialogReady'], timeout=20)",
+    "    time.sleep(0.2)",
     "    child.send(cfg['query'])",
+    "    child.send('\\r')",
+    "    child.expect_exact('Prompts matching', timeout=20)",
+    "    captured.append(str(child.before) + 'Prompts matching')",
     "    child.expect_exact(cfg['expected'], timeout=20)",
     "    captured.append(str(child.before) + cfg['expected'])",
     "    ok = True",

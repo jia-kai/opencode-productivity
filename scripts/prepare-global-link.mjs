@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url"
 const root = process.cwd()
 const linkDirectory = path.join(root, ".global-opencode-productivity-plugin")
 const serverModule = pathToFileURL(path.join(root, "dist/src/server.js")).href
+const v2Module = pathToFileURL(path.join(root, "dist/src/index.js")).href
 const tuiModule = pathToFileURL(path.join(root, "dist/src/tui.js")).href
 
 await mkdir(linkDirectory, { recursive: true })
@@ -30,7 +31,7 @@ await writeFile(
 
 await writeFile(
   path.join(linkDirectory, "server.js"),
-  `export { default, server } from ${JSON.stringify(serverModule)}\n`,
+  `export { server } from ${JSON.stringify(serverModule)}\nexport { default } from ${JSON.stringify(v2Module)}\n`,
 )
 
 await writeFile(
