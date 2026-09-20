@@ -32,12 +32,21 @@ npm run build
 
 ### Project-local development
 
-This repo includes project-local OpenCode config in `.opencode/`. From this directory, `opencode` loads:
+This repo includes a project-local OpenCode v2 plugin in `.opencode/`. From this directory, `opencode` (v2) loads:
 
-- `.opencode/plugins/productivity.ts`
-- `.opencode/tui-plugins/productivity-history.ts`
+- `.opencode/plugins/productivity/index.ts` (server plugin)
+- `.opencode/plugins/productivity/tui.ts` (TUI plugin)
 
 Those wrappers point at the compiled package files under `dist/`, so run `npm run build` after edits before restarting OpenCode.
+
+### OpenCode v2 support
+
+OpenCode v2 ships a new plugin API; v1 plugin implementations do not run under v2. The compiled entrypoints therefore expose hybrid default exports, following the same approach as the dynamic-context-pruning migration:
+
+- `dist/src/server.js` default-exports `{ id, setup, server }`: v2 loaders consume `id` + `setup` (`src/v2.ts`), v1 loaders consume `server` (`src/plugin.ts`).
+- `dist/src/tui.js` default-exports `{ id, setup, tui }`: v2 loaders consume `id` + `setup` (`src/tui-v2.tsx`), v1 loaders consume `tui`.
+
+Known v2 gaps: wakeup/background notes are delivered as synthetic session messages, and the prompt-history picker copies the selected prompt to the clipboard (OSC52) instead of inserting it into the composer, because v2 has no composer-insertion API.
 
 ### Editable global development
 
@@ -86,16 +95,7 @@ The package exposes separate OpenCode entrypoints:
 - `opencode-productivity-plugin/server`
 - `opencode-productivity-plugin/tui`
 
-OpenCode package plugins with both `./server` and `./tui` exports should be added to both server and TUI plugin config by `opencode plugin`. If prompt history commands such as `ctrl+r` or `/oc-history` do not appear after a packaged install, check your global `tui.json` and add the package spec to its `plugin` array:
-
-```json
-{
-  "plugin": ["opencode-productivity-plugin@0.1.0"],
-  "keybinds": {
-    "session_rename": "none"
-  }
-}
-```
+OpenCode v2 loads both entrypoints of a package plugin registered through `opencode plugin`. If prompt history commands such as `ctrl+r` or `/oc-history` do not appear after a packaged install, run `opencode plugin list` and check the server log under `~/.local/share/opencode/log/` for plugin load errors.
 
 For local project development, this repo uses explicit file wrappers in `.opencode/` instead of the package spec above.
 
@@ -154,13 +154,13 @@ npm run build
 OPENCODE_TUI_TESTS=1 node dist/tests/opencode-tools.integration.test.js
 ```
 
-That test first reads prompt history from the current OpenCode system to verify history lookup is available, then creates a deterministic temporary SQLite history fixture, opens the real OpenCode TUI in a pseudo-terminal, selects `Search Prompt History` from the command palette, types a filter, and asserts that a candidate hidden before typing becomes visible after typing.
+That test first reads prompt history from the current OpenCode system to verify history lookup is available, then creates a deterministic temporary SQLite history fixture, opens the real OpenCode TUI in a pseudo-terminal, opens the Prompt History dialog with `ctrl+r` or `/oc-history`, submits a query that matches nothing, then submits a query for a deeply buried fixture prompt and asserts that the custom scorer surfaces it in the results dialog.
 
 ## TUI history search
 
-The project includes a current OpenCode TUI plugin registered from `.opencode/tui.json`.
+The TUI plugin registers a `Search Prompt History` palette command with slash aliases through OpenCode v2's keymap layer.
 
-Open the command palette and choose `Search Prompt History`, or press `ctrl+r`. The command opens an in-TUI select dialog immediately; candidates update as you type in the dialog filter.
+Open the command palette and choose `Search Prompt History`, press `ctrl+r` (the plugin binds it, overriding the default `session_rename` shortcut), or run `/oc-history`. The dialog re-ranks matches on every keystroke with the custom scorer; `↑`/`↓` move the selection, `enter` copies the selected prompt to the clipboard (OSC52, since OpenCode v2 does not expose a composer-insertion API), and `esc` closes. If the custom overlay is unavailable, it falls back to a two-step prompt/select flow using the host dialogs.
 
 Search indexes at most the 4,096 most recent manually entered prompts and gives the dialog only the best 100 current matches to keep burst typing responsive. System messages, synthetic plugin notifications, and synthetic file-attachment expansions are excluded.
 
@@ -195,7 +195,7 @@ Pass another Markdown file as the first argument to test custom content:
 ./scripts/test-preview.sh path/to/document.md
 ```
 
-The project-local `.opencode/tui.json` disables OpenCode's default `session_rename` binding so `ctrl+r` opens prompt history instead of renaming the session.
+The keymap binding for `ctrl+r` takes precedence over OpenCode's default `session_rename` shortcut while the plugin's layer is active.
 
 The command also registers the TUI slash alias:
 

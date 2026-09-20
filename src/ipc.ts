@@ -234,7 +234,7 @@ export function productivityTuiSocketPath(directory: string, opencodePid = proce
   return path.join(productivityRuntimeRoot(), `${hashProjectPath(directory)}-server-${opencodePid}-tui-${nonce}.sock`)
 }
 
-export function discoverProductivityTuiSockets(directory: string, opencodePid = process.pid): string[] {
+export function discoverProductivityTuiSockets(directory: string, opencodePid?: number): string[] {
   try {
     return readdirSync(productivityRuntimeRoot(), { withFileTypes: true })
       .filter((entry) => entry.isSocket() && isProductivityTuiSocketName(directory, opencodePid, entry.name))
@@ -244,9 +244,16 @@ export function discoverProductivityTuiSockets(directory: string, opencodePid = 
   }
 }
 
-export function isProductivityTuiSocketName(directory: string, opencodePid: number, name: string): boolean {
-  const prefix = `${hashProjectPath(directory)}-server-${opencodePid}-tui-`
-  return name.startsWith(prefix) && name.endsWith(".sock")
+export function isProductivityTuiSocketName(directory: string, opencodePid: number | undefined, name: string): boolean {
+  const prefix = `${hashProjectPath(directory)}-server-`
+  if (!name.startsWith(prefix) || !name.endsWith(".sock")) return false
+  if (opencodePid === undefined) {
+    // OpenCode v2 runs the TUI and server as separate processes, so discovery
+    // must accept sockets created by other PIDs. Stale sockets are pruned by
+    // cleanupStaleProductivitySockets, and peers are validated on connect.
+    return true
+  }
+  return name.startsWith(`${prefix}${opencodePid}-tui-`)
 }
 
 export function cleanupStaleProductivitySockets(): void {

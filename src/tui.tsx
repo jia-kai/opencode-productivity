@@ -1,9 +1,6 @@
-import {
-  MAX_PROMPT_HISTORY_ENTRIES,
-  PromptHistoryIndex,
-  searchPromptHistory,
-  type PromptHistoryMatch,
-} from "./history.js"
+import { type PreparedPromptHistoryEntry } from "./history.js"
+import { currentHistoryDialogState, DetailedStatus, EMPTY_HISTORY_OPTION_ID, ensurePromptHistoryLoaded, formatWakeup, toHistoryOptions, wrapPreview } from "./tui-shared.js"
+import { setup } from "./tui-v2.js"
 import {
   startProductivityTuiIpcServer,
   type ProductivityActionResponse,
@@ -11,7 +8,6 @@ import {
   type ProductivityTuiIpcServer,
 } from "./ipc.js"
 import {
-  sidebarBackgroundStatusCommands,
   type BackgroundStatusSnapshot,
   type ProductivityStatusSnapshot,
 } from "./status.js"
@@ -20,15 +16,13 @@ import { latestAssistantMarkdown, previewPalette } from "./preview-support.js"
 import { checkPreviewEnvironment } from "./preview-environment.js"
 import { encodePreviewPayload, MAX_PREVIEW_CLI_PAYLOAD_LENGTH } from "./preview-payload.js"
 import { previewTmuxArgs } from "./preview-tmux.js"
-import { createComponent, createElement, insert, setProp } from "@opentui/solid"
-import { TextAttributes } from "@opentui/core"
+import { createComponent } from "@opentui/solid"
 import { createMemo, createSignal } from "solid-js"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const PLUGIN_ID = "opencode-productivity-history"
-const EMPTY_HISTORY_OPTION_ID = "__opencode_productivity_empty_history__"
 
 export const id = PLUGIN_ID
 
@@ -62,7 +56,7 @@ export const tui: TuiPlugin = async (api: any) => {
         slashName: "oc-history",
         slashAliases: ["history-search", "prompt-history"],
         run() {
-          openHistorySelect(api, "")
+          openHistorySelect(api)
         },
       },
       {
@@ -129,6 +123,7 @@ export const tui: TuiPlugin = async (api: any) => {
     if (activeTuiIpc === tuiIpc) activeTuiIpc = undefined
     void tuiIpc?.close()
   })
+  ensurePromptHistoryLoaded()
 }
 
 async function openMarkdownPreview(api: any): Promise<void> {
@@ -286,47 +281,57 @@ function showAlert(api: any, title: string, message: string) {
   api.ui.dialog.replace(() => api.ui.DialogAlert({ title, message: message.slice(0, 6_000) }))
 }
 
-function formatWakeup(wakeup: WakeupRecord): string {
-  return [
-    `ID: ${wakeup.id}`,
-    `Name: ${wakeup.name}`,
-    `Status: ${wakeup.status}`,
-    `Run at: ${wakeup.runAt}`,
-    `Due: ${wakeup.dueInSeconds}s`,
-    `Message: ${wakeup.message}`,
-  ].join("\n")
-}
-
+/**
+ * Hybrid default export: OpenCode v2 TUI loaders consume `id` + `setup`,
+ * while OpenCode v1 TUI loaders consume `id` + `tui` (mirrors the
+ * dynamic-context-pruning v2 migration).
+ */
 export default {
   id: PLUGIN_ID,
+  setup,
   tui,
 }
 
-function openHistorySelect(api: any, initialQuery: string) {
-  const allMatches = searchPromptHistory(initialQuery, { limit: MAX_PROMPT_HISTORY_ENTRIES })
-  const byID = new Map(allMatches.map((match) => [match.id, match]))
-
-  api.ui.dialog.replace(() => HistorySearchDialog({ api, allMatches, byID }))
+function openHistorySelect(api: any) {
+  const [version, setVersion] = createSignal(0)
+  ensurePromptHistoryLoaded(() => setVersion((value) => value + 1))
+  api.ui.dialog.replace(() => HistorySearchDialog({ api, version }))
 }
 
 function HistorySearchDialog(props: {
   api: any
-  allMatches: PromptHistoryMatch[]
-  byID: Map<string, PromptHistoryMatch>
+  version: () => number
 }) {
   const [filter, setFilter] = createSignal("")
-  const historyIndex = new PromptHistoryIndex(props.allMatches)
-  const visibleMatches = createMemo(() => historyIndex.find(filter()))
+  const snapshot = () => (props.version(), currentHistoryDialogState())
+  const visibleMatches = createMemo(() => {
+    const index = snapshot().index
+    return index ? index.find(filter()) : []
+  })
+  const byID = createMemo(() => {
+    const matches = new Map<string, PreparedPromptHistoryEntry>()
+    for (const item of snapshot().items) matches.set(item.id, item)
+    return matches
+  })
   return props.api.ui.DialogSelect({
     title: "Prompt History",
-    placeholder: `Search ${props.allMatches.length} prompts`,
+    placeholder: snapshot().index ? `Search ${snapshot().items.length} prompts` : "Loading prompt history",
     get options() {
+      const state = snapshot()
+      if (!state.index) {
+        return [{
+          title: "Loading prompt history…",
+          value: EMPTY_HISTORY_OPTION_ID,
+          description: "One moment",
+        }]
+      }
       return toHistoryOptions(visibleMatches())
     },
     skipFilter: true,
     onFilter: setFilter,
     onSelect: (option: { value: string }) => {
-      const match = props.byID.get(option.value)
+      if (option.value === EMPTY_HISTORY_OPTION_ID) return
+      const match = byID().get(option.value)
       if (!match) return
       insertPrompt(props.api, match.prompt)
       props.api.ui.dialog.clear()
@@ -356,93 +361,6 @@ function registerStatusSlots(api: any): () => void {
     if (typeof registration === "function") registration()
     else if (typeof registration === "string") api.slots.unregister?.(registration)
   }
-}
-
-function DetailedStatus(props: { getSnapshot: () => ProductivityStatusSnapshot }) {
-  const wakeups = createMemo(() => props.getSnapshot().wakeups.filter((wakeup) => wakeup.status === "scheduled").slice(0, 5))
-  const commands = createMemo(() => sidebarBackgroundStatusCommands(props.getSnapshot().commands))
-
-  const box = createElement("box")
-  setProp(box, "flexDirection", "column")
-  setProp(box, "gap", 1)
-  insert(box, [
-    StatusSection({
-      title: "Wakeup status",
-      rows: () => wakeups().map((wakeup) => ({ text: `${wakeup.name} ${formatSidebarWakeupTime(wakeup.runAt)}: ${wakeup.message}` })),
-    }),
-    StatusSection({
-      title: "Background status",
-      rows: () => commands().map(formatSidebarBackgroundRow),
-    }),
-  ])
-  return box
-}
-
-interface StatusRow {
-  text: string
-  fg?: string
-}
-
-function StatusSection(props: { title: string; rows: () => StatusRow[] }) {
-  const [open, setOpen] = createSignal(true)
-  const box = createElement("box")
-  setProp(box, "flexDirection", "column")
-
-  const header = createElement("text")
-  setProp(header, "wrapMode", "word")
-  setProp(header, "attributes", TextAttributes.BOLD)
-  setProp(header, "onMouseDown", () => props.rows().length > 0 && setOpen((value) => !value))
-  insert(header, () => {
-    const rows = props.rows()
-    if (rows.length === 0) return ""
-    return `${open() ? "▼" : "▶"} ${props.title}`
-  })
-  insert(box, header)
-
-  const rowsBox = createElement("box")
-  setProp(rowsBox, "flexDirection", "column")
-  insert(rowsBox, () => {
-    if (!open()) return []
-    return props.rows().map((row) => StatusRowText(row))
-  })
-  insert(box, rowsBox)
-  return box
-}
-
-function StatusRowText(row: StatusRow) {
-  const text = createElement("text")
-  setProp(text, "wrapMode", "word")
-  if (row.fg) setProp(text, "fg", row.fg)
-  insert(text, `- ${row.text}`)
-  return text
-}
-
-function formatSidebarBackgroundRow(command: BackgroundStatusSnapshot): StatusRow {
-  const exitCode = command.exitCode
-  if (command.status === "running" || typeof exitCode !== "number") {
-    return { text: `${command.id} ${command.status}: ${command.command}` }
-  }
-  return {
-    text: `${command.id} exit ${exitCode}: ${command.command}`,
-    fg: exitCode === 0 ? "white" : "red",
-  }
-}
-
-function formatSidebarWakeupTime(runAt: string, now = new Date()): string {
-  const date = new Date(runAt)
-  if (!Number.isFinite(date.getTime())) return runAt
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-  if (isSameLocalDay(date, now)) return time
-  const dateOptions: Intl.DateTimeFormatOptions = date.getFullYear() === now.getFullYear()
-    ? { month: "short", day: "numeric" }
-    : { month: "short", day: "numeric", year: "numeric" }
-  return `${date.toLocaleDateString(undefined, dateOptions)} ${time}`
-}
-
-function isSameLocalDay(left: Date, right: Date): boolean {
-  return left.getFullYear() === right.getFullYear()
-    && left.getMonth() === right.getMonth()
-    && left.getDate() === right.getDate()
 }
 
 function readSelectedSnapshot(api: any): ProductivityStatusSnapshot {
@@ -489,22 +407,6 @@ async function requestProductivityReset(api: any) {
   }
 }
 
-function toHistoryOptions(matches: PromptHistoryMatch[]) {
-  if (matches.length === 0) {
-    return [{
-      title: "No prompt history matches",
-      value: EMPTY_HISTORY_OPTION_ID,
-      description: "Keep typing or press Esc",
-    }]
-  }
-  return matches.map((match) => ({
-    title: wrapPreview(match.prompt, 88, 4),
-    value: match.id,
-    description: new Date(match.createdAt).toLocaleString(),
-    footer: wrapPreview(match.prompt, 88, 6),
-  }))
-}
-
 async function insertPrompt(api: any, text: string) {
   if (!text) return
   try {
@@ -520,51 +422,4 @@ async function insertPrompt(api: any, text: string) {
       message: error instanceof Error ? error.message : "Failed to insert prompt history entry",
     })
   }
-}
-
-function oneLine(value: string): string {
-  return value.trim().replace(/\s+/g, " ")
-}
-
-function wrapPreview(value: string, width: number, maxLines: number): string {
-  const words = oneLine(value).split(" ").filter(Boolean)
-  if (words.length === 0) return ""
-
-  const lines: string[] = []
-  let line = ""
-  for (const word of words) {
-    if (lines.length >= maxLines) break
-    if (word.length > width) {
-      if (line) {
-        lines.push(line)
-        line = ""
-        if (lines.length >= maxLines) break
-      }
-      for (let index = 0; index < word.length && lines.length < maxLines; index += width) {
-        const chunk = word.slice(index, index + width)
-        if (chunk.length === width && index + width < word.length && lines.length === maxLines - 1) {
-          lines.push(`${chunk.slice(0, Math.max(0, width - 3))}...`)
-          break
-        }
-        lines.push(chunk)
-      }
-      continue
-    }
-
-    const next = line ? `${line} ${word}` : word
-    if (next.length <= width) {
-      line = next
-      continue
-    }
-    lines.push(line)
-    line = word
-  }
-  if (line && lines.length < maxLines) lines.push(line)
-
-  const rendered = lines.slice(0, maxLines)
-  if (words.join(" ").length > rendered.join(" ").length && rendered.length > 0) {
-    const last = rendered[rendered.length - 1]
-    rendered[rendered.length - 1] = `${last.slice(0, Math.max(0, width - 3))}...`
-  }
-  return rendered.join("\n")
 }
