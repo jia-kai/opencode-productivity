@@ -7,18 +7,11 @@ import path from "node:path"
 import {
   dedupePrompts,
   filterPromptHistory,
-  fuzzyScore,
   MAX_PROMPT_HISTORY_ENTRIES,
   rankPromptHistory,
   resolveHistoryDbPath,
   searchPromptHistory,
 } from "../src/history.js"
-
-test("fuzzyScore uses fzf scoring", () => {
-  assert.ok(fuzzyScore("hello", "hello") > fuzzyScore("hello", "h e l l o"))
-  assert.ok(fuzzyScore("hlo", "hello") > 0)
-  assert.equal(fuzzyScore("xyz", "hello"), 0)
-})
 
 test("dedupePrompts keeps most recent normalized prompt", () => {
   const result = dedupePrompts([
@@ -29,7 +22,7 @@ test("dedupePrompts keeps most recent normalized prompt", () => {
   assert.equal(result[0].id, "new")
 })
 
-test("rankPromptHistory orders by recency then score and truncates", () => {
+test("rankPromptHistory orders matches by recency and truncates", () => {
   const result = rankPromptHistory(
     [
       { id: "1", prompt: "deploy", createdAt: 1 },
@@ -57,13 +50,22 @@ test("filterPromptHistory searches the full index but bounds visible matches", (
   assert.equal(filtered[0].id, "3000")
 })
 
-test("filterPromptHistory uses recency to break equal fzf scores", () => {
+test("filterPromptHistory orders matches newest first", () => {
   const result = filterPromptHistory([
     { id: "older-exact", prompt: "deploy", createdAt: 1 },
     { id: "newer-substring", prompt: "please deploy the service", createdAt: 2 },
   ], "deploy")
 
   assert.deepEqual(result.map((entry) => entry.id), ["newer-substring", "older-exact"])
+})
+
+test("filterPromptHistory requires every complete query word", () => {
+  const entries = [
+    { id: "match", prompt: "run tests now", createdAt: 2 },
+    { id: "substring", prompt: "rerun tests now", createdAt: 3 },
+    { id: "missing", prompt: "run build now", createdAt: 4 },
+  ]
+  assert.deepEqual(filterPromptHistory(entries, "run tests").map((entry) => entry.id), ["match"])
 })
 
 test("resolveHistoryDbPath honors explicit env override", () => {

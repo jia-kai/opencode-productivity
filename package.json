@@ -3,47 +3,35 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Local OpenCode plugin with prompt history search, scheduled wakeups, and background shell commands.",
+  "description": "OpenCode 2 plugin with prompt history search and scheduled wakeups.",
   "main": "./dist/src/server.js",
   "exports": {
-    "./server": {
-      "import": "./dist/src/server.js",
-      "types": "./dist/src/server.d.ts"
-    },
-    "./tui": {
-      "import": "./dist/src/tui.js",
-      "types": "./dist/src/tui.d.ts"
-    }
+    ".": "./dist/src/server.js",
+    "./tui": "./dist/src/tui.js",
+    "./rpc": "./dist/src/rpc.js"
   },
-  "files": [
-    "dist/src",
-    "THIRD_PARTY_NOTICES.md",
-    "README.md",
-    "package.json"
-  ],
-  "workspaces": [
-    ".opencode"
-  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "test": "node --test dist/tests/*.test.js",
-    "install:tui": "npm install --workspace @local/opencode-productivity-runtime",
-    "prepare:global-link": "node scripts/prepare-global-link.mjs",
-    "link:global": "npm run build && npm run prepare:global-link && opencode plugin -g \"$PWD/.global-opencode-productivity-plugin\" --force",
-    "pack:dry": "npm pack --dry-run",
-    "test:opencode": "npm run build && OPENCODE_REAL_MODEL_TESTS=1 node --test dist/tests/opencode-tools.integration.test.js",
-    "check": "npm run build && npm test"
+    "check": "npm run build && npm test",
+    "link": "npm run build && node scripts/link-global.mjs && opencode service restart",
+    "pack:dry": "npm pack --dry-run"
   },
   "engines": {
-    "opencode": "^1.0.0",
+    "opencode": "^2.0.0",
     "node": ">=26"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.18",
-    "@opentui/core": "0.4.5",
-    "@opentui/solid": "0.4.5",
-    "fzf": "^0.5.2",
-    "puppeteer-core": "^24.43.1",
+    "@opencode/plugin": "2.0.16",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
     "solid-js": "1.9.12"
-  }
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2"
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ]
 }

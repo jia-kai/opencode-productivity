@@ -61,21 +61,16 @@ test("clear removes all wakeup history", () => {
   scheduler.dispose()
 })
 
-test("user cancellation notifies originating wakeup session", async () => {
+test("a due wakeup delivers to its originating session", async () => {
   const prompts: string[] = []
   const scheduler = new WakeupScheduler({
-    session: {
-      async prompt(input) {
-        prompts.push(input.body.parts.map((part) => part.text).join("\n"))
-      },
-    },
+    async synthetic(input) { prompts.push(input.text) },
   })
-  const record = scheduler.schedule({ name: "user-cancel", message: "wake up", delaySeconds: 60 }, "session-1")
+  const record = scheduler.schedule({ name: "due", message: "wake up", delaySeconds: 0 }, "session-1")
 
-  const cancelled = await scheduler.cancelByUser(record.id)
-  assert.equal(cancelled.status, "cancelled")
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(scheduler.list().find((item) => item.id === record.id)?.status, "fired")
   assert.equal(prompts.length, 1)
-  assert.match(prompts[0], /cancelled by user/)
   assert.match(prompts[0], /wake up/)
   scheduler.dispose()
 })

@@ -3,14 +3,31 @@
     "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2024", "DOM"],
+    "lib": [
+      "ES2024",
+      "DOM"
+    ],
     "strict": true,
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "jsxImportSource": "@opentui/solid",
     "declaration": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": ".",
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"]
+  "include": [
+    "src/server.ts",
+    "src/tui.tsx",
+    "src/rpc.ts",
+    "src/scheduler.ts",
+    "src/delivery.ts",
+    "src/history.ts",
+    "src/config.ts",
+    "src/time.ts",
+    "tests/history.test.ts",
+    "tests/scheduler.test.ts"
+  ]
 }

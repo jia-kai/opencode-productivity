@@ -1,7 +1,7 @@
 import { DEFAULTS } from "./config.js"
 import { postSessionNote, type DeliveryResult } from "./delivery.js"
 import { nowIso, parseRunAt } from "./time.js"
-import type { OpenCodeClient } from "./types.js"
+import type { SessionDelivery } from "./delivery.js"
 
 export interface ScheduleWakeupArgs {
   name: string
@@ -39,7 +39,7 @@ export class WakeupScheduler {
   private wakeups = new Map<string, InternalWakeup>()
   private nextID = 1
 
-  constructor(private readonly client?: OpenCodeClient) {}
+  constructor(private readonly client?: SessionDelivery, private readonly changed: () => void = () => {}) {}
 
   schedule(args: ScheduleWakeupArgs, sessionID?: string, now = Date.now()): WakeupRecord {
     if (this.activeCount() >= DEFAULTS.maxActiveWakeups) {
@@ -75,6 +75,7 @@ export class WakeupScheduler {
     }
     this.arm(record, fireAt)
     this.wakeups.set(record.id, record)
+    this.changed()
     return this.snapshot(record)
   }
 
@@ -87,19 +88,7 @@ export class WakeupScheduler {
     if (record.timer) clearTimeout(record.timer)
     record.timer = undefined
     record.status = "cancelled"
-    return this.snapshot(record)
-  }
-
-  async cancelByUser(idOrName: string): Promise<WakeupRecord> {
-    const record = this.resolve(idOrName)
-    if (record.timer) clearTimeout(record.timer)
-    record.timer = undefined
-    record.status = "cancelled"
-    record.lastDelivery = await postSessionNote(
-      this.client,
-      record.sessionID,
-      `Scheduled wakeup ${record.id} / ${record.name} was cancelled by user: ${record.message}`,
-    )
+    this.changed()
     return this.snapshot(record)
   }
 
@@ -111,6 +100,7 @@ export class WakeupScheduler {
       if (record.status === "scheduled") record.status = "cancelled"
     }
     this.wakeups.clear()
+    this.changed()
     return count
   }
 
@@ -158,6 +148,7 @@ export class WakeupScheduler {
       record.status = record.lastDelivery.ok ? "fired" : "failed"
       record.timer = undefined
     }
+    this.changed()
   }
 
   private snapshot(record: InternalWakeup): WakeupRecord {

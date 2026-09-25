@@ -1,225 +1,93 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { Fzf, type FzfResultItem } from "fzf"
+import { DatabaseSync } from "node:sqlite"
 
 export interface PromptHistoryEntry {
   id: string
   prompt: string
   createdAt: number
 }
-
-export interface PromptHistoryMatch extends PromptHistoryEntry {
-  score: number
-}
-
-export interface HistorySearchOptions {
-  limit?: number
-  dbPath?: string
-}
-
+export interface PromptHistoryMatch extends PromptHistoryEntry { score: number }
 export const MAX_PROMPT_HISTORY_ENTRIES = 4_096
 export const MAX_VISIBLE_PROMPT_HISTORY_MATCHES = 100
 
-type StatementRows = Array<Record<string, unknown>>
-
 export function resolveHistoryDbPath(env: NodeJS.ProcessEnv = process.env): string {
-  const dataHome = env.XDG_DATA_HOME || path.join(homedir(), ".local", "share")
-  return env.OPENCODE_HISTORY_DB || path.join(dataHome, "opencode", "opencode.db")
-}
-
-export function fuzzyScore(query: string, candidate: string): number {
-  const normalizedQuery = query.trim()
-  if (!normalizedQuery) return 1
-  return new Fzf([candidate], { casing: "case-insensitive" }).find(normalizedQuery)[0]?.score ?? 0
+  return env.OPENCODE_HISTORY_DB || path.join(env.XDG_DATA_HOME || path.join(homedir(), ".local", "share"), "opencode", "opencode.db")
 }
 
 export function dedupePrompts(entries: PromptHistoryEntry[]): PromptHistoryEntry[] {
-  const byPrompt = new Map<string, PromptHistoryEntry>()
-  for (const entry of entries) {
+  const seen = new Set<string>()
+  return entries.sort((a, b) => b.createdAt - a.createdAt).filter((entry) => {
     const key = entry.prompt.trim().replace(/\s+/g, " ")
-    const existing = byPrompt.get(key)
-    if (!existing || entry.createdAt > existing.createdAt) byPrompt.set(key, entry)
-  }
-  return [...byPrompt.values()]
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
-export function rankPromptHistory(
-  entries: PromptHistoryEntry[],
-  query: string,
-  limit = 50,
-): PromptHistoryMatch[] {
-  return new PromptHistoryIndex(entries).find(query, limit)
+function words(value: string): string[] {
+  return value.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []
 }
 
 export class PromptHistoryIndex {
   private readonly entries: PromptHistoryEntry[]
-  private readonly finder: Fzf<PromptHistoryEntry[]>
-
+  private readonly postings = new Map<string, Set<number>>()
   constructor(entries: PromptHistoryEntry[]) {
-    this.entries = dedupePrompts(entries).sort((a, b) => b.createdAt - a.createdAt)
-    this.finder = new Fzf(this.entries, {
-      casing: "case-insensitive",
-      selector: (entry: PromptHistoryEntry) => entry.prompt,
-      tiebreakers: [(
-        a: FzfResultItem<PromptHistoryEntry>,
-        b: FzfResultItem<PromptHistoryEntry>,
-      ) => b.item.createdAt - a.item.createdAt],
+    this.entries = dedupePrompts(entries)
+    this.entries.forEach((entry, index) => {
+      for (const word of new Set(words(entry.prompt))) {
+        let posting = this.postings.get(word)
+        if (!posting) this.postings.set(word, posting = new Set())
+        posting.add(index)
+      }
     })
   }
-
   find(query: string, limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES): PromptHistoryMatch[] {
-    const normalizedQuery = query.trim()
-    if (!normalizedQuery) {
-      return this.entries.slice(0, limit).map((entry) => ({ ...entry, score: 1 }))
+    const terms = [...new Set(words(query))]
+    if (terms.length === 0) return this.entries.slice(0, limit).map((entry) => ({ ...entry, score: 1 }))
+    const lists = terms.map((term) => this.postings.get(term))
+    if (lists.some((list) => !list)) return []
+    const smallest = lists.reduce((a, b) => a!.size <= b!.size ? a : b)!
+    const matches: PromptHistoryMatch[] = []
+    for (const index of smallest) {
+      if (lists.every((list) => list!.has(index))) matches.push({ ...this.entries[index], score: terms.length })
+      if (matches.length >= limit) break
     }
-    return this.finder.find(normalizedQuery)
-      .slice(0, limit)
-      .map((match: FzfResultItem<PromptHistoryEntry>) => ({ ...match.item, score: match.score }))
+    return matches
   }
 }
 
-export function filterPromptHistory(
-  entries: PromptHistoryEntry[],
-  query: string,
-  limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES,
-): PromptHistoryMatch[] {
+export function rankPromptHistory(entries: PromptHistoryEntry[], query: string, limit = 50): PromptHistoryMatch[] {
   return new PromptHistoryIndex(entries).find(query, limit)
 }
+export function filterPromptHistory(entries: PromptHistoryEntry[], query: string, limit = MAX_VISIBLE_PROMPT_HISTORY_MATCHES): PromptHistoryMatch[] {
+  return rankPromptHistory(entries, query, limit)
+}
 
-export function searchPromptHistory(query: string, options: HistorySearchOptions = {}): PromptHistoryMatch[] {
+export function searchPromptHistory(query: string, options: { limit?: number; dbPath?: string } = {}): PromptHistoryMatch[] {
   const dbPath = options.dbPath ?? resolveHistoryDbPath()
   if (!existsSync(dbPath)) return []
-  const resultLimit = Math.min(options.limit ?? 50, MAX_PROMPT_HISTORY_ENTRIES)
-  const rows = loadPromptRows(dbPath, Math.min(Math.max(resultLimit, 200), MAX_PROMPT_HISTORY_ENTRIES))
-  return rankPromptHistory(rows, query, resultLimit)
-}
-
-function loadPromptRows(dbPath: string, limit: number): PromptHistoryEntry[] {
-  return loadPromptRowsWithNodeSqlite(dbPath, limit) ?? loadPromptRowsWithBunSqlite(dbPath, limit) ?? []
-}
-
-function loadPromptRowsWithNodeSqlite(dbPath: string, limit: number): PromptHistoryEntry[] | undefined {
-  let db: import("node:sqlite").DatabaseSync | undefined
+  const db = new DatabaseSync(dbPath, { readOnly: true })
   try {
-    const sqlite = requireNodeSqlite()
-    db = new sqlite.DatabaseSync(dbPath, { readOnly: true })
-    for (const sql of candidates) {
-      try {
-        const rows = db.prepare(sql).all(limit) as StatementRows
-        const parsed = rows.map(normalizeRow).filter((entry): entry is PromptHistoryEntry => Boolean(entry?.prompt))
-        if (parsed.length > 0) return parsed
-      } catch {
-        // Try the next known schema candidate.
-      }
-    }
-  } catch {
-    return undefined
-  } finally {
-    db?.close()
-  }
-  return undefined
-}
-
-interface BunSqliteModule {
-  Database: new (path: string, options?: { readonly?: boolean }) => {
-    query(sql: string): { all(...args: unknown[]): StatementRows }
-    close(): void
-  }
-}
-
-function loadPromptRowsWithBunSqlite(dbPath: string, limit: number): PromptHistoryEntry[] | undefined {
-  let db: InstanceType<BunSqliteModule["Database"]> | undefined
-  try {
-    const sqlite = requireBunSqlite()
-    if (!sqlite) return undefined
-    db = new sqlite.Database(dbPath, { readonly: true })
-    for (const sql of candidates) {
-      try {
-        const rows = db.query(sql).all(limit)
-        const parsed = rows.map(normalizeRow).filter((entry): entry is PromptHistoryEntry => Boolean(entry?.prompt))
-        if (parsed.length > 0) return parsed
-      } catch {
-        // Try the next known schema candidate.
-      }
-    }
-  } catch {
-    return undefined
-  } finally {
-    db?.close()
-  }
-  return undefined
-}
-
-const candidates = [
-  `with recent_user_messages as (
-      select m.id, m.time_created as createdAt
-      from message m
-      where json_extract(m.data, '$.role') = 'user'
-        and exists (
-          select 1
-          from part p
-          where p.message_id = m.id
-            and json_extract(p.data, '$.type') = 'text'
-            and json_extract(p.data, '$.text') is not null
-            and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
-        )
-      order by m.time_created desc
-      limit ?
-    )
-    select id, group_concat(text, char(10)) as prompt, createdAt
-    from (
-      select m.id as id, json_extract(p.data, '$.text') as text, m.createdAt, p.time_created as partCreatedAt
-      from recent_user_messages m
+    const rows = db.prepare(`
+      select m.id, m.time_created as createdAt, group_concat(json_extract(p.data, '$.text'), char(10)) as prompt
+      from (select id, time_created from message
+            where json_extract(data, '$.role') = 'user'
+              and exists (select 1 from part p0 where p0.message_id = message.id
+                and json_extract(p0.data, '$.type') = 'text'
+                and coalesce(json_extract(p0.data, '$.synthetic'), 0) = 0
+                and json_extract(p0.data, '$.text') is not null)
+            order by rowid desc limit ?) m
       join part p on p.message_id = m.id
       where json_extract(p.data, '$.type') = 'text'
-        and json_extract(p.data, '$.text') is not null
         and coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
-      order by m.createdAt desc, p.time_created asc
-    )
-    group by id, createdAt
-    order by createdAt desc`,
-  `select id, json_extract(prompt, '$.text') as prompt, time_created as createdAt
-    from session_input
-    where json_extract(prompt, '$.text') is not null
-    order by time_created desc
-    limit ?`,
-  `select id, prompt, time_created as createdAt from session_input order by time_created desc limit ?`,
-  `select id, text as prompt, time_created as createdAt from message where role = 'user' order by time_created desc limit ?`,
-  `select id, prompt, created_at as createdAt from prompt_history order by created_at desc limit ?`,
-  `select id, content as prompt, created_at as createdAt from messages where role = 'user' order by created_at desc limit ?`,
-]
-
-function normalizeRow(row: Record<string, unknown>): PromptHistoryEntry | undefined {
-  const prompt = typeof row.prompt === "string" ? row.prompt : undefined
-  if (!prompt) return undefined
-  const id = typeof row.id === "string" || typeof row.id === "number" ? String(row.id) : prompt.slice(0, 32)
-  const rawCreatedAt = row.createdAt
-  const createdAt =
-    typeof rawCreatedAt === "number"
-      ? rawCreatedAt
-      : typeof rawCreatedAt === "string"
-        ? Date.parse(rawCreatedAt) || Number(rawCreatedAt) || 0
-        : 0
-  return { id, prompt, createdAt }
-}
-
-function requireNodeSqlite(): typeof import("node:sqlite") {
-  return process.getBuiltinModule("node:sqlite") as typeof import("node:sqlite")
-}
-
-function requireBunSqlite(): BunSqliteModule | undefined {
-  const getBuiltinModule = process.getBuiltinModule as unknown as ((id: string) => unknown) | undefined
-  const builtin = getBuiltinModule?.("bun:sqlite")
-  if (isBunSqliteModule(builtin)) return builtin
-
-  const req = Function("return typeof require === 'function' ? require : undefined")() as
-    | ((id: string) => unknown)
-    | undefined
-  const required = req?.("bun:sqlite")
-  return isBunSqliteModule(required) ? required : undefined
-}
-
-function isBunSqliteModule(value: unknown): value is BunSqliteModule {
-  return !!value && typeof value === "object" && typeof (value as { Database?: unknown }).Database === "function"
+        and json_extract(p.data, '$.text') is not null
+      group by m.id, m.time_created
+      order by m.time_created desc
+    `).all(MAX_PROMPT_HISTORY_ENTRIES) as Array<{ id: string; createdAt: number; prompt: string }>
+    return rankPromptHistory(rows, query, Math.min(options.limit ?? 50, MAX_PROMPT_HISTORY_ENTRIES))
+  } finally {
+    db.close()
+  }
 }
