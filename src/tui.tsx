@@ -1,8 +1,10 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createSignal, For, Show } from "solid-js"
+import { createMemo, createSignal, For, Show } from "solid-js"
+import { jsx } from "@opentui/solid/jsx-runtime"
 import { ProductivityRpc } from "./rpc.js"
 import { PromptHistoryIndex, searchPromptHistory, type PromptHistoryEntry } from "./history.js"
 import type { WakeupRecord } from "./scheduler.js"
+import type { ShellInfo } from "@opencode/client"
 
 export default Plugin.define({
   id: "opencode.productivity.tui",
@@ -10,26 +12,69 @@ export default Plugin.define({
     const rpc = context.client.rpc(ProductivityRpc)
     const location = context.location ?? context.data.location.default()
     const [wakeups, setWakeups] = createSignal<WakeupRecord[]>([])
+    const [commands, setCommands] = createSignal<ShellInfo[]>([])
     const [now, setNow] = createSignal(Date.now())
     const refresh = async () => {
-      try { setWakeups(await rpc.list({}, { location }) as WakeupRecord[]) }
-      catch { /* server may be restarting */ }
+      const [timers, shells] = await Promise.allSettled([rpc.list({}, { location }), rpc.backgroundList({}, { location })])
+      if (timers.status === "fulfilled") setWakeups(timers.value as WakeupRecord[])
+      if (shells.status === "fulfilled") setCommands(shells.value as ShellInfo[])
     }
     void refresh()
     const off = rpc.events.on("changed", () => { void refresh() })
-    const interval = setInterval(() => setNow(Date.now()), 1_000)
+    const interval = setInterval(() => {
+      setNow(Date.now())
+      if (commands().length) void refresh()
+    }, 1_000)
     const slot = context.ui.slot({
       append: "sidebar.content",
       render: ({ sessionID }) => {
+        const [commandsExpanded, setCommandsExpanded] = createSignal(true)
+        const [timersExpanded, setTimersExpanded] = createSignal(true)
         const active = () => wakeups().filter((w) => w.sessionID === sessionID && w.status === "scheduled")
-        return <Show when={active().length > 0}>
-          <box flexDirection="column">
-            <text fg={context.theme.text.base}>Wakeup timers</text>
-            <For each={active()}>{(w) => <text fg={context.theme.text.muted}>
-              {w.name} · {Math.max(0, Math.ceil((Date.parse(w.runAt) - now()) / 1000))}s · {w.message}
-            </text>}</For>
+        const shells = () => commands().filter((shell) => shell.metadata.sessionID === sessionID)
+        // tsc's JSX runtime needs an explicit reactive boundary.
+        const content = createMemo(() => {
+          now()
+          return <box flexDirection="column">
+          <Show when={shells().length > 0}>
+            <box flexDirection="column">
+              <box onMouseDown={(event) => {
+                if (event.button !== 0) return
+                event.stopPropagation()
+                setCommandsExpanded((expanded) => !expanded)
+              }}>
+                <text selectable={false} fg={context.theme.text.base}>
+                  {commandsExpanded() ? "▾" : "▸"} Background commands ({shells().length})
+                </text>
+              </box>
+              <Show when={commandsExpanded()}>
+                <For each={shells()}>{(shell) => <text fg={context.theme.text.muted}>
+                  {shell.command.replace(/\s+/g, " ")} · {Math.max(0, Math.floor((now() - shell.time.started) / 1000))}s
+                </text>}</For>
+              </Show>
+            </box>
+          </Show>
+          <Show when={active().length > 0}>
+            <box flexDirection="column">
+              <box onMouseDown={(event) => {
+                if (event.button !== 0) return
+                event.stopPropagation()
+                setTimersExpanded((expanded) => !expanded)
+              }}>
+                <text selectable={false} fg={context.theme.text.base}>
+                  {timersExpanded() ? "▾" : "▸"} Wakeup timers ({active().length})
+                </text>
+              </box>
+              <Show when={timersExpanded()}>
+                <For each={active()}>{(w) => <text fg={context.theme.text.muted}>
+                  {w.name} · {Math.max(0, Math.ceil((Date.parse(w.runAt) - now()) / 1000))}s · {w.message}
+                </text>}</For>
+              </Show>
+            </box>
+          </Show>
           </box>
-        </Show>
+        })
+        return jsx("box", { get children() { return content() } })
       },
     })
     const app = context.ui.slot({
@@ -40,6 +85,31 @@ export default Plugin.define({
           priority: 100,
           bindings: ["productivity.history"],
           commands: [
+            {
+              id: "productivity.background",
+              title: "Background shell commands",
+              group: "Productivity",
+              palette: true,
+              slash: { name: "oc-background" },
+              run: async () => {
+                try {
+                  const shells = await rpc.backgroundList({}, { location }) as ShellInfo[]
+                  setCommands(shells)
+                  if (!shells.length) { context.ui.toast.show({ message: "No running background commands" }); return }
+                  const selected = await context.ui.dialog.select({
+                    title: "Background shell commands",
+                    options: shells.map((shell) => ({ title: shell.command.replace(/\s+/g, " "), value: shell.id, description: `${shell.id} · PID ${shell.pid ?? "unknown"}` })),
+                  })
+                  const shell = shells.find((shell) => shell.id === selected)
+                  if (!shell) return
+                  const stop = await context.ui.dialog.confirm({ title: "Stop background command?", message: shell.command })
+                  if (stop) {
+                    await rpc.backgroundKill({ id: shell.id, sessionID: String(shell.metadata.sessionID) }, { location })
+                    await refresh()
+                  }
+                } catch (error) { context.ui.toast.show({ message: String(error), variant: "error" }) }
+              },
+            },
             {
               id: "productivity.timers",
               title: "Active wakeup timers",

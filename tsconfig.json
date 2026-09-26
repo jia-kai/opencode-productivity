@@ -28,6 +28,7 @@
     "src/config.ts",
     "src/time.ts",
     "tests/history.test.ts",
-    "tests/scheduler.test.ts"
+    "tests/scheduler.test.ts",
+    "tests/background.test.ts"
   ]
 }

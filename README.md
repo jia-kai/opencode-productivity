@@ -1,36 +1,51 @@
 # OpenCode Productivity Plugin
 
-OpenCode 2 plugin with scheduled wakeups and prompt history search.
+Scheduled wakeups, background command management, and prompt history search for OpenCode 2.
 
-## Development
+## Install
 
-Requires OpenCode 2.0.16 and Node 26 or newer.
+Requires a Unix-like system, OpenCode 2.0.16, and Node.js 26 or newer.
 
 ```sh
+git clone https://github.com/jia-kai/opencode-productivity.git
+cd opencode-productivity
 npm install
-npm run check
 npm run link
 opencode
 ```
 
-`npm run link` builds this checkout and registers it with the global OpenCode 2 installation. Run it again after source changes, then restart any open TUI.
+`npm run link` builds the plugin, installs it globally, and restarts the OpenCode background service. Restart any open OpenCode TUI afterward. Keep this checkout in place: the installed plugin points to its compiled files. To apply source updates, run `npm run link` again.
 
-## Editable global install
+## Tools
 
-```sh
-npm run link
-```
+### Wakeups
 
-This builds the plugin, writes small server and TUI entrypoints under `~/.config/opencode/plugins/opencode-productivity-plugin/` (or `$XDG_CONFIG_HOME/opencode/plugins/`), and restarts the OpenCode background service. The entrypoints point to this checkout's `dist/` files, so future changes only need another `npm run link` and a TUI restart. The script refuses to replace files that it did not generate.
+Ask the agent to resume a task later—for example, “Check the build again in five minutes.” Wakeups send a message to the session that scheduled them and can run once or repeat.
 
-## Wakeups
+| Agent tool               | Purpose                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `ScheduleWakeup`         | Schedule by time (`runAt`) or delay (`delaySeconds`), with optional `repeatSeconds`. |
+| `ListWakeups`            | Show wakeups and their status.                                                       |
+| `CancelWakeup`           | Cancel a wakeup by ID or name.                                                       |
 
-The model can call `ScheduleWakeup`, `ListWakeups`, and `CancelWakeup`. A wakeup belongs to the session that scheduled it; when due, it sends a synthetic message to that session. Timers are kept in the OpenCode server process and are lost when that process stops.
+Active timers appear in the sidebar. Use `/oc-timers` to view or cancel them. Timers are lost when the OpenCode server stops.
 
-The TUI shows active timers in the session sidebar. `/oc-timers` opens the full active timer list and lets you cancel one. The list uses OpenCode 2's plugin RPC, so it follows the connected server. No separate socket or background command process is used.
+### Background commands
 
-## Prompt history
+Run a command with OpenCode's built-in `shell` tool using `background: true`, or press `Ctrl+B` while a shell command is running. Running commands appear in the sidebar and in the agent's context.
 
-Use `ctrl+r` or `/oc-history words to find` in the TUI. Queries require complete words, separated by spaces, and all words must appear in the prompt. Matching prompts are shown newest first. Selecting a prompt inserts it into the composer for review or editing, without submitting it. This uses the focused OpenTUI editor because OpenCode 2 does not expose a public composer insertion method. The command reads up to 4,096 recent manually entered prompts from OpenCode's local SQLite database; the word index filters those prompts in memory.
+| Agent tool               | Purpose                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `ListBackgroundCommands` | List the current session's running commands, shell IDs, PIDs, and output files.      |
+| `KillBackgroundCommand`  | Stop a command and its process tree by shell ID.                                     |
 
-The history search reads the local database at `~/.local/share/opencode/opencode.db` or `OPENCODE_HISTORY_DB` when set. It is intended for a local TUI, including when the connected OpenCode server is remote.
+Use `/oc-background` to view commands and stop one after confirmation. Stopping a command also deletes its captured output file.
+
+Background management requires the normal OpenCode background service; `--standalone` servers are unsupported. Only commands observed while the plugin is active are tracked. Processes detached by scripts with `&` are not managed.
+
+### Prompt history
+
+Press `Ctrl+R` or enter `/oc-history words to find` to search previous prompts. Search uses complete words and requires every word to match. Results appear newest first; selecting one inserts it into the composer for editing without sending it.
+
+Search covers up to 4,096 recent manually entered prompts in the local OpenCode database, even when connected to a remote server. Set `OPENCODE_HISTORY_DB` to use a different database path.
+
