@@ -3,6 +3,10 @@ import { Rpc } from "@opencode/plugin/rpc"
 export const ProductivityRpc = Rpc.define({
   id: "productivity",
   methods: {
+    context: {
+      input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"], additionalProperties: false },
+      output: { type: "object", additionalProperties: true },
+    },
     backgroundList: {
       input: { type: "object", properties: {}, additionalProperties: false },
       output: { type: "array", items: { type: "object", additionalProperties: true } },

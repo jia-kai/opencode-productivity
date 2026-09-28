@@ -29,6 +29,7 @@
     "src/time.ts",
     "tests/history.test.ts",
     "tests/scheduler.test.ts",
-    "tests/background.test.ts"
+    "tests/background.test.ts",
+    "tests/context.test.ts"
   ]
 }

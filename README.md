@@ -1,6 +1,14 @@
 # OpenCode Productivity Plugin
 
-Scheduled wakeups, background command management, and prompt history search for OpenCode 2.
+Scheduled wakeups, background command management, context analysis, and prompt history search for OpenCode 2.
+
+## Context usage
+
+Enter `/oc-context` in a session to inspect the last model request. The overview shows estimated tokens and percentages for the system prompt, `AGENTS.md` and other instruction files, available and loaded skills, tool definitions, user and assistant messages, tool calls/results, and compaction or provider state when present. The scrollable text report includes instruction files and individual tools, sorted by size, together with the model, capture time, and context limit when available. Use the arrow keys, Page Up/Page Down, or mouse wheel to scroll; Escape closes the report.
+
+This command runs locally without sending a model request. Counts use one token per four Unicode characters, not a model tokenizer; message framing and media token costs are excluded, and opaque provider state cannot be measured accurately. Categories describe recognizable sections at this plugin's context hook; subsequent plugin changes are excluded. The snapshot precedes the response, so new output and pending composer edits are excluded. Send another message to refresh it.
+
+Only aggregate counts and source/tool names are kept in server memory, for up to 100 sessions per location. No prompt bodies are retained. After a server/plugin restart, a session needs another request before `/oc-context` has a snapshot.
 
 ## Install
 
@@ -48,4 +56,3 @@ Background management requires the normal OpenCode background service; `--standa
 Press `Ctrl+R` or enter `/oc-history words to find` to search previous prompts. Search uses complete words and requires every word to match. Results appear newest first; selecting one inserts it into the composer for editing without sending it.
 
 Search covers up to 4,096 recent manually entered prompts in the local OpenCode database, even when connected to a remote server. Set `OPENCODE_HISTORY_DB` to use a different database path.
-

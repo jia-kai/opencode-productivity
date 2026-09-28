@@ -1,10 +1,12 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, For, Show } from "solid-js"
 import { jsx } from "@opentui/solid/jsx-runtime"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { ProductivityRpc } from "./rpc.js"
 import { PromptHistoryIndex, searchPromptHistory, type PromptHistoryEntry } from "./history.js"
 import type { WakeupRecord } from "./scheduler.js"
 import type { ShellInfo } from "@opencode/client"
+import { formatContextReport, type ContextReport } from "./context.js"
 
 export default Plugin.define({
   id: "opencode.productivity.tui",
@@ -85,6 +87,55 @@ export default Plugin.define({
           priority: 100,
           bindings: ["productivity.history"],
           commands: [
+            {
+              id: "productivity.context",
+              title: "Analyze context usage",
+              group: "Productivity",
+              palette: true,
+              slash: { name: "oc-context" },
+              run: async () => {
+                const route = context.ui.router.current()
+                if (route.type !== "session") {
+                  context.ui.toast.show({ message: "Open a session to analyze its context" })
+                  return
+                }
+                try {
+                  const { report } = await rpc.context({ sessionID: route.sessionID }, { location }) as { report: ContextReport | null }
+                  if (!report) {
+                    await context.ui.dialog.alert({ title: "Context usage", message: "No request captured for this session. Send a message, then run /oc-context again. Snapshots are cleared when the server or plugin restarts." })
+                    return
+                  }
+                  const model = context.data.location.model.list(location)?.find((model) => model.providerID === report.model.providerID && model.modelID === report.model.id)
+                  const text = formatContextReport(report, model?.limit.context)
+                  context.ui.dialog.show(() => {
+                    context.ui.dialog.set({ size: "large", centered: true })
+                    let scroll: ScrollBoxRenderable | undefined
+                    context.keymap.layer(() => ({
+                      mode: "global",
+                      priority: 200,
+                      commands: [
+                        { bind: "up", run: () => { scroll?.scrollBy(-1) } },
+                        { bind: "down", run: () => { scroll?.scrollBy(1) } },
+                        { bind: "pageup", run: () => { scroll?.scrollBy(-1, "viewport") } },
+                        { bind: "pagedown", run: () => { scroll?.scrollBy(1, "viewport") } },
+                        { bind: "home", run: () => { scroll?.scrollTo(0) } },
+                        { bind: "end", run: () => { scroll?.scrollTo(scroll.scrollHeight) } },
+                      ],
+                    }))
+                    return <box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+                      <box flexDirection="row" justifyContent="space-between">
+                        <text fg={context.theme.text.base}>Context usage · last request</text>
+                        <text fg={context.theme.text.muted} onMouseDown={() => context.ui.dialog.clear()}>esc</text>
+                      </box>
+                      <scrollbox ref={(value) => { scroll = value }} height={Math.max(4, Math.floor(context.renderer.height * 0.6))} scrollX={false} focused>
+                        <text fg={context.theme.text.base} wrapMode="word" flexShrink={0}>{text}</text>
+                      </scrollbox>
+                      <text fg={context.theme.text.muted}>↑/↓ or PgUp/PgDn to scroll · Esc to close</text>
+                    </box>
+                  })
+                } catch (error) { context.ui.toast.show({ message: String(error), variant: "error" }) }
+              },
+            },
             {
               id: "productivity.background",
               title: "Background shell commands",

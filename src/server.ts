@@ -3,6 +3,7 @@ import { WakeupScheduler } from "./scheduler.js"
 import { ProductivityRpc } from "./rpc.js"
 import { localTimeContext } from "./time.js"
 import { BackgroundCommands, nativeShellApi } from "./background.js"
+import { ContextSnapshots } from "./context.js"
 
 const text = (value: unknown) => ({ content: JSON.stringify(value) })
 const string = { type: "string" } as const
@@ -14,7 +15,13 @@ export default Plugin.define({
     let changed = () => {}
     const scheduler = new WakeupScheduler(ctx.session, () => changed())
     const background = new BackgroundCommands(nativeShellApi(ctx.location.directory))
+    const snapshots = new ContextSnapshots()
     const rpc = await ctx.rpc.register(ProductivityRpc, {
+      context: async (input) => {
+        const { sessionID } = input as { sessionID: string }
+        await ctx.session.get({ sessionID })
+        return JSON.parse(JSON.stringify({ report: snapshots.get(sessionID) ?? null }))
+      },
       list: async () => JSON.parse(JSON.stringify(scheduler.list())),
       cancel: async (input) => JSON.parse(JSON.stringify(scheduler.cancel((input as { target: string }).target))),
       backgroundList: async () => JSON.parse(JSON.stringify(await background.list())),
@@ -36,6 +43,7 @@ export default Plugin.define({
         const commands = await background.list(event.sessionID)
         if (commands.length) event.system.push({ type: "text", text: `Running background shell commands in this session (use ListBackgroundCommands to refresh, KillBackgroundCommand to stop):\n${JSON.stringify(commands)}` })
       } catch { /* ListBackgroundCommands reports connection errors explicitly. */ }
+      snapshots.capture(event)
     })
     const tools = await ctx.tool.transform((editor) => {
       editor.add({
